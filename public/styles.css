@@ -916,6 +916,97 @@ body[data-state="result"] .sheet {
 	flex: none;
 }
 
+/* ---------------------------------------------------------------- install */
+
+.install {
+	position: fixed;
+	left: 50%;
+	transform: translateX(-50%);
+	bottom: max(16px, env(safe-area-inset-bottom));
+	z-index: 45;
+	display: flex;
+	align-items: center;
+	gap: 13px;
+	width: min(480px, calc(100% - 24px));
+	padding: 13px 14px;
+	border-radius: 20px;
+	background: var(--glass-strong);
+	backdrop-filter: var(--blur);
+	-webkit-backdrop-filter: var(--blur);
+	box-shadow:
+		inset 0 1px 0 var(--hairline),
+		0 0 0 1px var(--border),
+		var(--shadow-lg);
+	animation: install-in 0.42s var(--spring);
+}
+
+@keyframes install-in {
+	from {
+		opacity: 0;
+		transform: translate(-50%, 16px) scale(0.97);
+	}
+}
+
+.install-icon {
+	flex: none;
+	border-radius: 11px;
+}
+
+.install-copy {
+	flex: 1;
+	min-width: 0;
+}
+
+.install-title {
+	margin: 0;
+	font-size: 14.5px;
+	font-weight: 650;
+	letter-spacing: -0.25px;
+}
+
+.install-sub {
+	margin: 2px 0 0;
+	font-size: 12.5px;
+	line-height: 1.35;
+	color: var(--muted);
+}
+
+.install-actions {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	flex: none;
+}
+
+.install-close {
+	display: grid;
+	place-items: center;
+	width: 28px;
+	height: 28px;
+	border-radius: 50%;
+	color: var(--muted);
+	transition: background 0.14s var(--ease);
+}
+
+.install-close:hover {
+	background: rgb(15 23 42 / 8%);
+}
+
+/* iOS cannot trigger an install, so the button is replaced by instructions. */
+.install.is-ios .install-actions #install-go {
+	display: none;
+}
+
+.install-share {
+	display: inline-grid;
+	place-items: center;
+	width: 17px;
+	height: 17px;
+	vertical-align: -4px;
+	margin: 0 1px;
+	color: var(--accent);
+}
+
 /* ------------------------------------------------------------- responsive */
 
 /*

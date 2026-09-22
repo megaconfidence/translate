@@ -27,6 +27,7 @@ for (const id of [
 	"pick", "shutter", "flip", "sheet", "sheet-title", "sheet-sub", "retake",
 	"toggle", "toggle-label", "download", "peek", "peek-text", "peek-close",
 	"peek-translation", "camera-input", "file",
+	"install", "install-go", "install-no", "install-sub",
 ]) {
 	el[id] = document.getElementById(id);
 }
@@ -278,7 +279,18 @@ async function translate(dataUrl) {
 	setState("working");
 	el.scanner.hidden = false;
 	el.overlay.replaceChildren();
+	el.install.hidden = true;
 	showToast("Reading the image…", false, true);
+
+	// Fail fast and honestly rather than waiting out a fetch that cannot work.
+	if (navigator.onLine === false) {
+		el.scanner.hidden = true;
+		setState("result");
+		el["sheet-title"].textContent = "You're offline";
+		el["sheet-sub"].textContent = "Translating needs a connection. The app still opens offline.";
+		showToast("No connection", true);
+		return;
+	}
 
 	try {
 		const response = await fetch("/api/translate", {
@@ -305,6 +317,8 @@ async function translate(dataUrl) {
 		render(payload);
 		setState("result");
 		hideToast();
+		// Value delivered: the install offer is now earned, but not yet shown.
+		earnedInstall = true;
 
 		const missing = payload.regions.filter((r) => !r.translatedOk).length;
 		el["sheet-title"].textContent = `${payload.detectedLanguage.toUpperCase()} → ${el.target.value.toUpperCase()}`;
@@ -509,6 +523,10 @@ function showPeek(region) {
 
 function reset() {
 	inFlight++;
+	// Going back for a second photo is the seam: the user is done reading and
+	// has just demonstrated repeat intent, which is a far better install signal
+	// than elapsed time — and by now Chrome's engagement heuristic has passed.
+	maybeOfferInstall();
 	current = { bitmap: null, dataUrl: null, result: null, colors: [] };
 	el.overlay.replaceChildren();
 	el.photo.removeAttribute("src");
@@ -520,6 +538,98 @@ function reset() {
 	else if (prefersCamera) bootCamera();
 	else setState("upload");
 }
+
+/* ----------------------------------------------------------------- install */
+
+/*
+ * Timing, and why it is not a timer.
+ *
+ * Chrome only fires `beforeinstallprompt` once its own engagement heuristics
+ * pass, which include ~30s on the page. A camera -> shutter -> result run can
+ * finish well inside that, so prompting on a fixed delay after the first
+ * translation would often find no prompt to show.
+ *
+ * Instead the banner needs two things, and appears when the later one lands:
+ *   1. a translation has succeeded (the user has seen the value), and
+ *   2. the browser has actually handed us a prompt (Chromium) or we know the
+ *      manual route (iOS).
+ * It is then surfaced at a seam — tapping "New photo" — rather than over the
+ * translation the user is still reading.
+ */
+const INSTALL_KEY = "translate.install.dismissed";
+const INSTALL_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+let deferredPrompt = null;
+let earnedInstall = false; // at least one successful translation this session
+
+const isStandalone = () =>
+	matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+
+/*
+ * Only Chromium implements beforeinstallprompt, so its absence is what actually
+ * defines "must install by hand". Testing the capability rather than the user
+ * agent also avoids a false positive on desktop Chrome, where `MacIntel` plus
+ * emulated touch points otherwise looks exactly like an iPad.
+ */
+const canPromptToInstall = "onbeforeinstallprompt" in window;
+
+const isIos = () =>
+	!canPromptToInstall &&
+	(/iphone|ipad|ipod/i.test(navigator.userAgent) ||
+		// iPadOS 13+ reports as a Mac; touch points disambiguate it.
+		(navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+
+function installDismissedRecently() {
+	const at = Number(localStorage.getItem(INSTALL_KEY) || 0);
+	return at > 0 && Date.now() - at < INSTALL_COOLDOWN_MS;
+}
+
+window.addEventListener("beforeinstallprompt", (event) => {
+	// Suppress the browser's own bar; we choose the moment.
+	event.preventDefault();
+	deferredPrompt = event;
+});
+
+window.addEventListener("appinstalled", () => {
+	deferredPrompt = null;
+	el.install.hidden = true;
+	localStorage.setItem(INSTALL_KEY, String(Date.now()));
+});
+
+/** Called at natural seams. Shows nothing unless every gate passes. */
+function maybeOfferInstall() {
+	if (el.install.hidden === false) return;
+	if (!earnedInstall || isStandalone() || installDismissedRecently()) return;
+
+	const ios = isIos();
+	if (!deferredPrompt && !ios) return; // nothing we could actually do
+
+	if (ios) {
+		el.install.classList.add("is-ios");
+		el["install-sub"].innerHTML =
+			'Tap <span class="install-share" aria-hidden="true">' +
+			'<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' +
+			'<path d="M12 15V3" /><path d="m8 7 4-4 4 4" />' +
+			'<path d="M4 13v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-6" /></svg></span>' +
+			" Share, then <strong>Add to Home Screen</strong>.";
+	}
+	el.install.hidden = false;
+}
+
+el["install-go"].addEventListener("click", async () => {
+	el.install.hidden = true;
+	if (!deferredPrompt) return;
+	const prompt = deferredPrompt;
+	deferredPrompt = null; // a prompt can only be used once
+	prompt.prompt();
+	const choice = await prompt.userChoice.catch(() => null);
+	if (choice?.outcome !== "accepted") localStorage.setItem(INSTALL_KEY, String(Date.now()));
+});
+
+el["install-no"].addEventListener("click", () => {
+	el.install.hidden = true;
+	localStorage.setItem(INSTALL_KEY, String(Date.now()));
+});
 
 /* ------------------------------------------------------------------- toast */
 
@@ -541,6 +651,17 @@ function hideToast() {
 }
 
 /* -------------------------------------------------------------------- boot */
+
+/* -------------------------------------------------------------------- boot */
+
+// Shell caching only; the worker explicitly never caches /api/*.
+if ("serviceWorker" in navigator) {
+	window.addEventListener("load", () => {
+		navigator.serviceWorker.register("/sw.js").catch((error) => {
+			console.warn("service worker registration failed", error);
+		});
+	});
+}
 
 await loadLanguages();
 if (prefersCamera) await bootCamera();

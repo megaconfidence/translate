@@ -11,7 +11,12 @@
 		<title>Translate</title>
 		<!-- Same asset as the in-app brand mark, so the two cannot drift apart. -->
 		<link rel="icon" href="/icon.svg" type="image/svg+xml" />
-		<link rel="apple-touch-icon" href="/icon.svg" />
+		<link rel="icon" href="/icon-192.png" sizes="192x192" type="image/png" />
+		<!-- iOS ignores SVG here and wants an opaque PNG. -->
+		<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+		<link rel="manifest" href="/manifest.webmanifest" />
+		<meta name="apple-mobile-web-app-title" content="Translate" />
+		<meta name="apple-mobile-web-app-status-bar-style" content="default" />
 		<link rel="stylesheet" href="/styles.css" />
 	</head>
 	<body data-state="boot">
@@ -131,6 +136,26 @@
 			</div>
 			<p id="peek-translation"></p>
 			<p class="peek-source"><span class="peek-tag">original</span><span id="peek-text"></span></p>
+		</div>
+
+		<!--
+			Install prompt. Shown at a natural seam (tapping "New photo" after a
+			successful translation), never mid-read. Two variants: Chromium gets a
+			real install button, iOS gets Add-to-Home-Screen instructions because
+			Safari has no beforeinstallprompt.
+		-->
+		<div id="install" class="install" hidden>
+			<img class="install-icon" src="/icon.svg" alt="" width="40" height="40" />
+			<div class="install-copy">
+				<p class="install-title">Open straight to the camera</p>
+				<p class="install-sub" id="install-sub">Add Translate to your home screen.</p>
+			</div>
+			<div class="install-actions">
+				<button id="install-go" class="btn btn-primary btn-sm">Install</button>
+				<button id="install-no" class="install-close" aria-label="Not now">
+					<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
+				</button>
+			</div>
 		</div>
 
 		<input id="camera-input" type="file" accept="image/*" capture="environment" hidden />
