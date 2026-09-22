@@ -2,6 +2,28 @@
 
 STOP. Your knowledge of Cloudflare Workers APIs and limits may be outdated. Always retrieve current documentation before any Workers, KV, R2, D1, Durable Objects, Queues, Vectorize, AI, or Agents SDK task.
 
+## Project invariant: the service worker shell
+
+`public/sw.js` precaches the app shell. **Every module must be listed in `SHELL` in `sw.js`.** Miss one and an offline launch stalls on a failed import — the page loads and the app never starts. This failure is invisible online, so it will not show up in normal testing.
+
+Whenever you add, rename, move, or delete a file under `public/js/` — or any other shell asset — do both of these:
+
+1. Update the `SHELL` array in `public/sw.js`.
+2. Bump `CACHE` (`translate-shell-vN` → `vN+1`). `activate` deletes every other cache, so clients pick up the new shell. Without the bump they keep serving the old one.
+
+Check the two are in step:
+
+```sh
+ls -1 public/js/*.js | wc -l      # modules on disk
+grep -c '"/js/' public/sw.js      # entries in SHELL
+```
+
+Verify offline behaviour after changing the shell: load the app, go offline, hard-reload, and confirm it still boots rather than hanging on a blank page.
+
+`/api/*` is deliberately never cached — a translation is a one-shot paid response tied to a single photo, so a stale one would draw the wrong text over the right picture.
+
+During development the service worker serves stale JavaScript. If an edit appears to have no effect, hard-reload or enable DevTools → Application → *Update on reload*.
+
 ## Docs
 
 - https://developers.cloudflare.com/workers/
