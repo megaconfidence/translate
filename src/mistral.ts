@@ -2,7 +2,7 @@
  * Mistral Document AI + chat calls.
  *
  * Measured behaviour this module relies on (probed against mistral-ocr-latest
- * on 2026-09-21, see README notes):
+ * on 2026-09-21):
  *  - `image_url` accepts a `data:` URL, so the image never needs to be hosted.
  *  - `include_blocks` works on single-image input; the image counts as one page.
  *  - Block coordinates are INTEGER PIXELS in the coordinate space of the image
@@ -11,8 +11,12 @@
  */
 
 const MISTRAL_API = "https://api.mistral.ai/v1";
-const OCR_TIMEOUT_MS = 60_000;
-const CHAT_TIMEOUT_MS = 60_000;
+
+/** Both calls are user-facing and single-shot, so they share one budget. */
+const REQUEST_TIMEOUT_MS = 60_000;
+
+/** Which upstream call failed, used for both logging and the client message. */
+export type Stage = "ocr" | "translate";
 
 export interface OcrBlock {
 	type: string;
@@ -39,7 +43,7 @@ const SKIPPED_BLOCK_TYPES = new Set(["image", "signature", "code", "equation"]);
 
 export class UpstreamError extends Error {
 	constructor(
-		readonly stage: "ocr" | "translate",
+		readonly stage: Stage,
 		readonly status: number,
 		message: string,
 	) {
@@ -48,13 +52,14 @@ export class UpstreamError extends Error {
 	}
 }
 
-async function postJson(
-	path: string,
-	apiKey: string,
-	body: unknown,
-	timeoutMs: number,
-	stage: "ocr" | "translate",
-): Promise<any> {
+interface PostOptions {
+	path: string;
+	apiKey: string;
+	stage: Stage;
+	body: unknown;
+}
+
+async function postJson({ path, apiKey, stage, body }: PostOptions): Promise<any> {
 	let response: Response;
 	try {
 		response = await fetch(`${MISTRAL_API}${path}`, {
@@ -64,7 +69,7 @@ async function postJson(
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify(body),
-			signal: AbortSignal.timeout(timeoutMs),
+			signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 		});
 	} catch (error) {
 		const timedOut = error instanceof Error && error.name === "TimeoutError";
@@ -78,11 +83,7 @@ async function postJson(
 	if (!response.ok) {
 		// Body may carry a useful provider message; cap it so we never log a wall of text.
 		const detail = (await response.text().catch(() => "")).slice(0, 300);
-		throw new UpstreamError(
-			stage,
-			response.status,
-			`${stage} returned ${response.status}: ${detail}`,
-		);
+		throw new UpstreamError(stage, response.status, `${stage} returned ${response.status}: ${detail}`);
 	}
 	return response.json();
 }
@@ -97,18 +98,17 @@ export async function runOcr(
 	model: string,
 	imageDataUrl: string,
 ): Promise<OcrResult> {
-	const data = await postJson(
-		"/ocr",
+	const data = await postJson({
+		path: "/ocr",
 		apiKey,
-		{
+		stage: "ocr",
+		body: {
 			model,
 			document: { type: "image_url", image_url: imageDataUrl },
 			include_blocks: true,
 			confidence_scores_granularity: "block",
 		},
-		OCR_TIMEOUT_MS,
-		"ocr",
-	);
+	});
 
 	const page = data?.pages?.[0];
 	if (!page) throw new UpstreamError("ocr", 502, "OCR returned no pages");
@@ -137,20 +137,20 @@ export async function runOcr(
  * line as "*Cocina tradicional*". Those markers are layout artefacts, not text
  * the user photographed, so they are removed before translation and drawing.
  */
+const MARKDOWN_RULES: ReadonlyArray<[RegExp, string]> = [
+	[/^\s{0,3}#{1,6}\s+/, ""], // headings
+	[/^\s{0,3}[-*+]\s+/, ""], // bullets
+	[/^\s{0,3}>\s?/, ""], // block quotes
+	[/\*\*(.+?)\*\*/g, "$1"], // bold
+	[/(^|[^*])\*([^*]+)\*/g, "$1$2"], // italics
+	[/__(.+?)__/g, "$1"], // underline-style bold
+	[/`([^`]+)`/g, "$1"], // inline code
+];
+
 export function stripMarkdown(raw: string): string {
 	return raw
 		.split("\n")
-		.map((line) =>
-			line
-				.replace(/^\s{0,3}#{1,6}\s+/, "")
-				.replace(/^\s{0,3}[-*+]\s+/, "")
-				.replace(/^\s{0,3}>\s?/, "")
-				.replace(/\*\*(.+?)\*\*/g, "$1")
-				.replace(/(^|[^*])\*([^*]+)\*/g, "$1$2")
-				.replace(/__(.+?)__/g, "$1")
-				.replace(/`([^`]+)`/g, "$1")
-				.trim(),
-		)
+		.map((line) => MARKDOWN_RULES.reduce((acc, [pattern, to]) => acc.replace(pattern, to), line).trim())
 		.join(" ")
 		.replace(/\s+/g, " ")
 		.trim();
@@ -158,6 +158,10 @@ export function stripMarkdown(raw: string): string {
 
 /** A block that survived filtering and is worth sending to the translator. */
 export interface TranslatableBlock {
+	/**
+	 * Index within this filtered list, not within the OCR blocks. It is the key
+	 * the model must echo back, and the only thing tying a translation to a box.
+	 */
 	id: number;
 	text: string;
 	block: OcrBlock;
@@ -193,8 +197,7 @@ const TRANSLATION_SCHEMA = {
 			properties: {
 				detected_language: {
 					type: "string",
-					description:
-						"ISO 639-1 code of the dominant source language, lowercase, e.g. 'es'.",
+					description: "ISO 639-1 code of the dominant source language, lowercase, e.g. 'es'.",
 				},
 				items: {
 					type: "array",
@@ -215,6 +218,32 @@ const TRANSLATION_SCHEMA = {
 	},
 } as const;
 
+function systemPrompt(targetLanguage: string): string {
+	return [
+		`You translate text extracted from a photograph into ${targetLanguage}.`,
+		"The items together form one document, so use the surrounding items as context.",
+		"Rules:",
+		"- Return exactly one entry for every id you were given. Never add or drop ids.",
+		"- Keep numbers, prices, currency symbols and proper nouns unchanged.",
+		"- Keep translations roughly as short as the source; they are drawn into a fixed box.",
+		`- If an item is already in ${targetLanguage}, repeat it unchanged.`,
+		"- Return only the translation, never an explanation or transliteration.",
+	].join("\n");
+}
+
+/**
+ * Chat content is usually a string, but reasoning models return an array of
+ * typed blocks whose `thinking` parts must be discarded before parsing.
+ */
+function extractText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	return content
+		.filter((part: any) => part?.type === "text")
+		.map((part: any) => part.text)
+		.join("");
+}
+
 /**
  * Every block goes in one request. Sending them together is both faster and
  * more accurate than per-block calls: short menu fragments are ambiguous alone,
@@ -226,50 +255,26 @@ export async function translateBlocks(
 	items: TranslatableBlock[],
 	targetLanguage: string,
 ): Promise<TranslationResult> {
-	const payload = items.map(({ id, text }) => ({ id, text }));
-
-	const data = await postJson(
-		"/chat/completions",
+	const data = await postJson({
+		path: "/chat/completions",
 		apiKey,
-		{
+		stage: "translate",
+		body: {
 			model,
 			temperature: 0.2,
 			max_tokens: 4000,
 			response_format: TRANSLATION_SCHEMA,
 			messages: [
+				{ role: "system", content: systemPrompt(targetLanguage) },
 				{
-					role: "system",
-					content: [
-						`You translate text extracted from a photograph into ${targetLanguage}.`,
-						"The items together form one document, so use the surrounding items as context.",
-						"Rules:",
-						"- Return exactly one entry for every id you were given. Never add or drop ids.",
-						"- Keep numbers, prices, currency symbols and proper nouns unchanged.",
-						"- Keep translations roughly as short as the source; they are drawn into a fixed box.",
-						`- If an item is already in ${targetLanguage}, repeat it unchanged.`,
-						"- Return only the translation, never an explanation or transliteration.",
-					].join("\n"),
+					role: "user",
+					content: JSON.stringify({ items: items.map(({ id, text }) => ({ id, text })) }),
 				},
-				{ role: "user", content: JSON.stringify({ items: payload }) },
 			],
 		},
-		CHAT_TIMEOUT_MS,
-		"translate",
-	);
+	});
 
-	const content = data?.choices?.[0]?.message?.content;
-	// Reasoning models return an array of content blocks rather than a string,
-	// so pull out the text parts before parsing.
-	const text =
-		typeof content === "string"
-			? content
-			: Array.isArray(content)
-				? content
-						.filter((part: any) => part?.type === "text")
-						.map((part: any) => part.text)
-						.join("")
-				: "";
-
+	const text = extractText(data?.choices?.[0]?.message?.content);
 	if (!text.trim()) {
 		throw new UpstreamError("translate", 502, "translation returned empty content");
 	}
@@ -284,17 +289,14 @@ export async function translateBlocks(
 	const byId = new Map<number, string>();
 	for (const entry of parsed?.items ?? []) {
 		const id = Number(entry?.id);
-		const translated = entry?.translated;
-		if (Number.isInteger(id) && typeof translated === "string") {
-			byId.set(id, translated);
+		if (Number.isInteger(id) && typeof entry?.translated === "string") {
+			byId.set(id, entry.translated);
 		}
 	}
 
 	return {
 		detectedLanguage:
-			typeof parsed?.detected_language === "string"
-				? parsed.detected_language
-				: "unknown",
+			typeof parsed?.detected_language === "string" ? parsed.detected_language : "unknown",
 		byId,
 	};
 }

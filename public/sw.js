@@ -12,16 +12,23 @@
  * Bump CACHE when shell files change; `activate` deletes every other cache.
  */
 
-const CACHE = "translate-shell-v1";
+const CACHE = "translate-shell-v2";
 
+/** Every module must be listed, or an offline launch stalls on a missing import. */
 const SHELL = [
 	"/",
-	"/app.js",
 	"/styles.css",
 	"/icon.svg",
 	"/manifest.webmanifest",
 	"/icon-192.png",
 	"/icon-512.png",
+	"/js/main.js",
+	"/js/ui.js",
+	"/js/camera.js",
+	"/js/image.js",
+	"/js/api.js",
+	"/js/overlay.js",
+	"/js/install.js",
 ];
 
 self.addEventListener("install", (event) => {

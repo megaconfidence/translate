@@ -15,6 +15,9 @@ const MAX_IMAGE_CHARS = 12_000_000;
 
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
+/** `data:<mime>;base64,<payload>` — the only image form the API accepts. */
+const DATA_URL_PATTERN = /^data:([^;,]+);base64,/;
+
 /** Target languages the UI offers. Kept server-side so the API validates too. */
 const TARGET_LANGUAGES: Record<string, string> = {
 	en: "English",
@@ -35,6 +38,9 @@ const TARGET_LANGUAGES: Record<string, string> = {
 	ru: "Russian",
 };
 
+/** Thrown for anything the caller can fix; always surfaces as a 400. */
+class BadRequest extends Error {}
+
 interface Region {
 	id: number;
 	type: string;
@@ -46,6 +52,17 @@ interface Region {
 	confidence: number | null;
 }
 
+interface TranslateResult {
+	width: number;
+	height: number;
+	detectedLanguage: string;
+	targetLanguage: string;
+	regions: Region[];
+	timings: { ocrMs: number; translateMs: number; totalMs: number };
+}
+
+/* -------------------------------------------------------------- utilities */
+
 function json(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
 		status,
@@ -56,28 +73,58 @@ function json(body: unknown, status = 200): Response {
 	});
 }
 
-function logEvent(fields: Record<string, unknown>): void {
-	console.log(JSON.stringify(fields));
+const logEvent = (fields: Record<string, unknown>) => console.log(JSON.stringify(fields));
+const logError = (fields: Record<string, unknown>) => console.error(JSON.stringify(fields));
+
+function boxOf(block: OcrBlock) {
+	return {
+		x: block.top_left_x,
+		y: block.top_left_y,
+		w: block.bottom_right_x - block.top_left_x,
+		h: block.bottom_right_y - block.top_left_y,
+	};
 }
 
 function validateDataUrl(image: unknown): string {
-	if (typeof image !== "string" || !image.startsWith("data:")) {
-		throw new BadRequest("image must be a data: URL");
-	}
+	if (typeof image !== "string") throw new BadRequest("image must be a data: URL");
 	if (image.length > MAX_IMAGE_CHARS) {
 		throw new BadRequest("image is too large; downscale before uploading");
 	}
-	const mime = image.slice(5, image.indexOf(";"));
+	const mime = DATA_URL_PATTERN.exec(image)?.[1];
+	if (!mime) throw new BadRequest("image must be a base64 data: URL");
 	if (!ALLOWED_IMAGE_TYPES.includes(mime)) {
 		throw new BadRequest(`unsupported image type "${mime}"`);
-	}
-	if (!image.includes(";base64,")) {
-		throw new BadRequest("image must be base64 encoded");
 	}
 	return image;
 }
 
-class BadRequest extends Error {}
+/** Maps a thrown error onto the response the client should see. */
+function toErrorResponse(error: unknown): Response {
+	if (error instanceof BadRequest) {
+		return json({ error: error.message }, 400);
+	}
+
+	if (error instanceof UpstreamError) {
+		logError({
+			message: "upstream failed",
+			stage: error.stage,
+			status: error.status,
+			error: error.message,
+		});
+		// A 4xx from the provider is usually our fault (bad key, bad payload), so
+		// it is reported as 502: one class of "the pipeline broke" rather than a
+		// misleading 401 that looks like the user's problem.
+		return json({ error: error.message, stage: error.stage }, error.status === 429 ? 429 : 502);
+	}
+
+	logError({
+		message: "unhandled error",
+		error: error instanceof Error ? error.message : String(error),
+	});
+	return json({ error: "internal error" }, 500);
+}
+
+/* ---------------------------------------------------------------- handlers */
 
 async function handleTranslate(request: Request, env: Env): Promise<Response> {
 	const startedAt = Date.now();
@@ -98,17 +145,20 @@ async function handleTranslate(request: Request, env: Env): Promise<Response> {
 	const ocr = await runOcr(env.MISTRAL_API_KEY, env.OCR_MODEL, image);
 	const ocrMs = Date.now() - ocrStarted;
 
+	const result = (fields: Partial<TranslateResult> & { translateMs: number }): TranslateResult => ({
+		width: ocr.width,
+		height: ocr.height,
+		detectedLanguage: "unknown",
+		targetLanguage: target,
+		regions: [],
+		...fields,
+		timings: { ocrMs, translateMs: fields.translateMs, totalMs: Date.now() - startedAt },
+	});
+
 	const translatable = selectTranslatable(ocr.blocks);
 	if (translatable.length === 0) {
 		logEvent({ message: "no text found", ocrMs, blocks: ocr.blocks.length });
-		return json({
-			width: ocr.width,
-			height: ocr.height,
-			detectedLanguage: "unknown",
-			targetLanguage: target,
-			regions: [],
-			timings: { ocrMs, translateMs: 0, totalMs: Date.now() - startedAt },
-		});
+		return json(result({ translateMs: 0 }));
 	}
 
 	const translateStarted = Date.now();
@@ -120,8 +170,8 @@ async function handleTranslate(request: Request, env: Env): Promise<Response> {
 	);
 	const translateMs = Date.now() - translateStarted;
 
-	// The join is by id we assigned, never by matching text. A translation that
-	// changes the wording therefore cannot detach a box from its content.
+	// The join is by the id we assigned, never by matching text. A translation
+	// that changes the wording therefore cannot detach a box from its content.
 	let missing = 0;
 	const regions: Region[] = translatable.map(({ id, text, block }) => {
 		const translated = translation.byId.get(id);
@@ -148,65 +198,25 @@ async function handleTranslate(request: Request, env: Env): Promise<Response> {
 		translateMs,
 	});
 
-	return json({
-		width: ocr.width,
-		height: ocr.height,
-		detectedLanguage: translation.detectedLanguage,
-		targetLanguage: target,
-		regions,
-		timings: { ocrMs, translateMs, totalMs: Date.now() - startedAt },
-	});
-}
-
-function boxOf(block: OcrBlock) {
-	return {
-		x: block.top_left_x,
-		y: block.top_left_y,
-		w: block.bottom_right_x - block.top_left_x,
-		h: block.bottom_right_y - block.top_left_y,
-	};
+	return json(
+		result({ detectedLanguage: translation.detectedLanguage, regions, translateMs }),
+	);
 }
 
 export default {
 	async fetch(request, env, _ctx): Promise<Response> {
-		const url = new URL(request.url);
+		const { pathname } = new URL(request.url);
 
-		if (url.pathname === "/api/languages") {
+		if (pathname === "/api/languages") {
 			return json({ languages: TARGET_LANGUAGES });
 		}
 
-		if (url.pathname === "/api/translate") {
-			if (request.method !== "POST") {
-				return json({ error: "method not allowed" }, 405);
-			}
+		if (pathname === "/api/translate") {
+			if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
 			try {
 				return await handleTranslate(request, env);
 			} catch (error) {
-				if (error instanceof BadRequest) {
-					return json({ error: error.message }, 400);
-				}
-				if (error instanceof UpstreamError) {
-					console.error(
-						JSON.stringify({
-							message: "upstream failed",
-							stage: error.stage,
-							status: error.status,
-							error: error.message,
-						}),
-					);
-					// 4xx from the provider is usually our fault (bad key, bad
-					// payload); surface it as 502 so the client sees one class
-					// of "the pipeline broke" rather than a misleading 401.
-					const status = error.status === 429 ? 429 : 502;
-					return json({ error: error.message, stage: error.stage }, status);
-				}
-				console.error(
-					JSON.stringify({
-						message: "unhandled error",
-						error: error instanceof Error ? error.message : String(error),
-					}),
-				);
-				return json({ error: "internal error" }, 500);
+				return toErrorResponse(error);
 			}
 		}
 
