@@ -1,183 +1,520 @@
+/*
+ * Translate - light, glassy, camera-first.
+ *
+ * Layout model: three full-viewport layers (video / viewer / dropzone) stacked
+ * at the back, with floating chrome docked over them. `body[data-state]` is the
+ * single switch that decides which layer and which dock are visible, so the JS
+ * never has to touch individual `hidden` flags to change screen.
+ */
+
 :root {
-	--bg: #11161d;
-	--panel: #1a212b;
-	--line: #2b3543;
-	--text: #e8edf4;
-	--muted: #93a1b4;
-	--accent: #5aa9ff;
-	--overlay-bg: #fffdf7;
-	--overlay-text: #14181e;
+	--bg: #f6f7f9;
+	--surface: rgb(255 255 255 / 78%);
+	--surface-solid: #fff;
+	--border: rgb(15 23 42 / 8%);
+	--text: #10151c;
+	--muted: #5d6b7f;
+	--accent: #1a73e8;
+	--danger: #c5351b;
+	--shadow-sm: 0 1px 2px rgb(15 23 42 / 8%), 0 2px 10px rgb(15 23 42 / 6%);
+	--shadow-lg: 0 6px 16px rgb(15 23 42 / 10%), 0 18px 50px rgb(15 23 42 / 14%);
+	--blur: saturate(180%) blur(20px);
+	--dock-bottom: max(18px, env(safe-area-inset-bottom));
+	--ease: cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 * {
 	box-sizing: border-box;
+	-webkit-tap-highlight-color: transparent;
+}
+
+/*
+ * Class rules like `.toast { display: flex }` out-specify the UA's
+ * `[hidden] { display: none }`, so the attribute silently stops working.
+ * This restores it for every element that carries `hidden`.
+ */
+[hidden] {
+	display: none !important;
 }
 
 html,
 body {
+	height: 100%;
 	margin: 0;
+	overflow: hidden;
 	background: var(--bg);
 	color: var(--text);
-	font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+	font-family:
+		system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
 	-webkit-text-size-adjust: 100%;
+	overscroll-behavior: none;
 }
 
-.bar {
-	display: flex;
-	align-items: center;
-	justify-content: space-between;
-	gap: 16px;
-	padding: max(12px, env(safe-area-inset-top)) 16px 12px;
-	border-bottom: 1px solid var(--line);
-	position: sticky;
-	top: 0;
-	background: var(--bg);
-	z-index: 5;
-}
-
-.bar h1 {
-	font-size: 19px;
-	margin: 0;
-	letter-spacing: 0.3px;
-}
-
-.field {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-}
-
-.field-label {
-	color: var(--muted);
-	font-size: 13px;
-}
-
+button,
 select {
-	background: var(--panel);
-	color: var(--text);
-	border: 1px solid var(--line);
-	border-radius: 9px;
-	padding: 7px 10px;
-	font-size: 15px;
-}
-
-main {
-	padding: 18px 16px 40px;
-	max-width: 900px;
-	margin: 0 auto;
-}
-
-.panel {
-	background: var(--panel);
-	border: 1px solid var(--line);
-	border-radius: 14px;
-	padding: 26px 20px;
-	text-align: center;
-}
-
-.lede {
-	color: var(--muted);
-	margin: 0 0 20px;
-	line-height: 1.5;
-}
-
-.actions {
-	display: flex;
-	gap: 10px;
-	justify-content: center;
-	flex-wrap: wrap;
+	font: inherit;
+	color: inherit;
 }
 
 button {
-	font: inherit;
-	font-size: 15px;
-	border-radius: 10px;
-	padding: 11px 18px;
 	cursor: pointer;
-	border: 1px solid transparent;
-	transition: filter 0.15s ease;
+	border: none;
+	background: none;
 }
 
-button:active {
-	filter: brightness(0.9);
+/* ------------------------------------------------------------------ layers */
+
+.layer {
+	position: fixed;
+	inset: 0;
+	opacity: 0;
+	visibility: hidden;
+	transition:
+		opacity 0.28s var(--ease),
+		visibility 0.28s;
 }
 
-button:disabled {
-	opacity: 0.55;
-	cursor: default;
+.video {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	background: #0b0d10;
 }
 
-.primary {
-	background: var(--accent);
-	color: #08121f;
-	font-weight: 600;
+/* The viewer letterboxes the still so the overlay can stay a pure % mapping. */
+.viewer {
+	display: grid;
+	place-items: center;
+	padding: 76px 12px calc(var(--dock-bottom) + 140px);
+	background: var(--bg);
 }
 
-.secondary {
-	background: transparent;
-	color: var(--text);
-	border-color: var(--line);
-}
-
-.stage {
-	display: flex;
-	flex-direction: column;
-	gap: 14px;
-	align-items: center;
-}
-
-/*
- * The frame is sized by the image. Overlay boxes are positioned in percentages
- * of the frame, so they stay locked to the artwork at any display size without
- * needing to be repositioned on resize.
- */
 .frame {
 	position: relative;
-	display: inline-block;
-	line-height: 0;
 	max-width: 100%;
-	border-radius: 12px;
+	max-height: 100%;
+	/* aspect-ratio is set from the OCR page dimensions at render time. */
+	border-radius: 18px;
 	overflow: hidden;
-	background: #000;
+	box-shadow: var(--shadow-lg);
+	background: #0b0d10;
+	line-height: 0;
 }
 
 .frame img {
 	display: block;
-	max-width: 100%;
-	height: auto;
+	width: 100%;
+	height: 100%;
+	object-fit: contain;
 }
 
 .overlay {
 	position: absolute;
 	inset: 0;
 	line-height: normal;
+	transition: opacity 0.16s var(--ease);
 }
 
-.overlay.hidden {
-	display: none;
+.overlay.muted {
+	opacity: 0;
 }
 
+.dropzone,
+.primer {
+	display: grid;
+	place-items: center;
+	padding: 24px;
+	background: var(--bg);
+}
+
+body[data-state="camera"] .video,
+body[data-state="captured"] .viewer,
+body[data-state="working"] .viewer,
+body[data-state="result"] .viewer,
+body[data-state="upload"] .dropzone,
+body[data-state="primer"] .primer {
+	opacity: 1;
+	visibility: visible;
+}
+
+/* ------------------------------------------------------------------ topbar */
+
+.topbar {
+	position: fixed;
+	top: 0;
+	left: 0;
+	right: 0;
+	z-index: 30;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: max(12px, env(safe-area-inset-top)) 14px 12px;
+	pointer-events: none;
+}
+
+.topbar > * {
+	pointer-events: auto;
+}
+
+.brand {
+	display: flex;
+	align-items: center;
+	gap: 9px;
+	padding: 7px 14px 7px 8px;
+	border-radius: 999px;
+	background: var(--surface);
+	backdrop-filter: var(--blur);
+	-webkit-backdrop-filter: var(--blur);
+	border: 1px solid var(--border);
+	box-shadow: var(--shadow-sm);
+}
+
+/* The glyph, colour and circle all live in /icon.svg — see index.html. */
+.brand-mark {
+	display: block;
+	width: 25px;
+	height: 25px;
+	flex: none;
+}
+
+.brand-name {
+	font-size: 14.5px;
+	font-weight: 600;
+	letter-spacing: -0.1px;
+}
+
+.pill {
+	position: relative;
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	padding: 8px 10px 8px 14px;
+	border-radius: 999px;
+	background: var(--surface);
+	backdrop-filter: var(--blur);
+	-webkit-backdrop-filter: var(--blur);
+	border: 1px solid var(--border);
+	box-shadow: var(--shadow-sm);
+	cursor: pointer;
+}
+
+.pill-caption {
+	font-size: 12px;
+	color: var(--muted);
+}
+
+.pill select {
+	appearance: none;
+	border: none;
+	background: none;
+	font-size: 14.5px;
+	font-weight: 600;
+	padding-right: 2px;
+	cursor: pointer;
+	max-width: 33vw;
+	text-overflow: ellipsis;
+}
+
+.pill select:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 4px;
+	border-radius: 6px;
+}
+
+.pill-chevron {
+	color: var(--muted);
+	flex: none;
+}
+
+/* ------------------------------------------------------------------- docks */
+
+.dock {
+	position: fixed;
+	left: 0;
+	right: 0;
+	bottom: 0;
+	z-index: 25;
+	opacity: 0;
+	visibility: hidden;
+	transform: translateY(14px);
+	transition:
+		opacity 0.26s var(--ease),
+		transform 0.26s var(--ease),
+		visibility 0.26s;
+}
+
+body[data-state="camera"] .camerabar,
+body[data-state="result"] .sheet {
+	opacity: 1;
+	visibility: visible;
+	transform: none;
+}
+
+/* camera bar */
+
+.camerabar {
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 34px;
+	padding: 20px 20px var(--dock-bottom);
+	background: linear-gradient(to top, rgb(8 11 15 / 42%), transparent);
+}
+
+.round {
+	display: grid;
+	place-items: center;
+	width: 46px;
+	height: 46px;
+	border-radius: 50%;
+	transition: transform 0.16s var(--ease);
+}
+
+.round:active {
+	transform: scale(0.92);
+}
+
+.round-ghost {
+	color: #fff;
+	background: rgb(255 255 255 / 16%);
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+	border: 1px solid rgb(255 255 255 / 26%);
+}
+
+.shutter {
+	width: 72px;
+	height: 72px;
+	border-radius: 50%;
+	background: rgb(255 255 255 / 26%);
+	border: 2.5px solid #fff;
+	display: grid;
+	place-items: center;
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+	transition: transform 0.14s var(--ease);
+}
+
+.shutter span {
+	width: 56px;
+	height: 56px;
+	border-radius: 50%;
+	background: #fff;
+	transition: transform 0.14s var(--ease);
+}
+
+.shutter:active span {
+	transform: scale(0.88);
+}
+
+.shutter:disabled {
+	opacity: 0.5;
+}
+
+/* result sheet */
+
+.sheet {
+	padding: 8px 16px var(--dock-bottom);
+	background: var(--surface);
+	backdrop-filter: var(--blur);
+	-webkit-backdrop-filter: var(--blur);
+	border-top: 1px solid var(--border);
+	border-radius: 20px 20px 0 0;
+	box-shadow: 0 -8px 34px rgb(15 23 42 / 12%);
+}
+
+.sheet-grip {
+	width: 38px;
+	height: 4px;
+	border-radius: 99px;
+	background: rgb(15 23 42 / 16%);
+	margin: 0 auto 12px;
+}
+
+.sheet-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 14px;
+	margin-bottom: 12px;
+}
+
+.sheet-title {
+	margin: 0;
+	font-size: 15.5px;
+	font-weight: 650;
+	letter-spacing: -0.15px;
+}
+
+.sheet-sub {
+	margin: 2px 0 0;
+	font-size: 12.5px;
+	color: var(--muted);
+}
+
+.sheet-actions {
+	display: flex;
+	gap: 9px;
+}
+
+/* ----------------------------------------------------------------- buttons */
+
+.btn {
+	border-radius: 999px;
+	padding: 11px 20px;
+	font-size: 14.5px;
+	font-weight: 600;
+	transition:
+		transform 0.14s var(--ease),
+		filter 0.14s var(--ease);
+}
+
+.btn:active {
+	transform: scale(0.97);
+}
+
+.btn-sm {
+	padding: 9px 16px;
+	font-size: 13.5px;
+}
+
+.btn-primary {
+	background: var(--accent);
+	color: #fff;
+	box-shadow: 0 2px 10px rgb(26 115 232 / 32%);
+}
+
+.btn-primary:hover {
+	filter: brightness(1.06);
+}
+
+.btn-quiet {
+	background: rgb(15 23 42 / 5%);
+	color: var(--text);
+}
+
+.chip {
+	flex: 1;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 7px;
+	padding: 11px 12px;
+	border-radius: 13px;
+	background: rgb(15 23 42 / 5%);
+	font-size: 13.5px;
+	font-weight: 550;
+	transition: background 0.14s var(--ease);
+	user-select: none;
+}
+
+.chip:hover {
+	background: rgb(15 23 42 / 9%);
+}
+
+.chip[aria-pressed="false"] {
+	background: rgb(26 115 232 / 12%);
+	color: var(--accent);
+}
+
+/* ---------------------------------------------------------------- dropzone */
+
+.dropcard {
+	width: min(430px, 100%);
+	padding: 40px 30px 32px;
+	border-radius: 22px;
+	background: var(--surface-solid);
+	border: 1px solid var(--border);
+	box-shadow: var(--shadow-lg);
+	text-align: center;
+}
+
+.dropzone.dragging .dropcard {
+	border-color: var(--accent);
+	box-shadow: 0 0 0 4px rgb(26 115 232 / 14%), var(--shadow-lg);
+}
+
+.dropicon {
+	display: grid;
+	place-items: center;
+	width: 58px;
+	height: 58px;
+	margin: 0 auto 16px;
+	border-radius: 50%;
+	background: rgb(26 115 232 / 10%);
+	color: var(--accent);
+}
+
+.dropcard h2 {
+	margin: 0 0 7px;
+	font-size: 20px;
+	font-weight: 650;
+	letter-spacing: -0.3px;
+}
+
+.dropcard p {
+	margin: 0 0 22px;
+	color: var(--muted);
+	font-size: 14.5px;
+	line-height: 1.5;
+}
+
+.droprow {
+	display: flex;
+	gap: 10px;
+	justify-content: center;
+	flex-wrap: wrap;
+}
+
+/* ---------------------------------------------------------------- overlay */
+
+/*
+ * A region is positioned in percentages of the frame, so it tracks the artwork
+ * at any size. Background colour is sampled from the photo at runtime and set
+ * inline, which is what keeps the chips from looking pasted on.
+ */
 .region {
 	position: absolute;
 	display: flex;
 	align-items: center;
-	background: var(--overlay-bg);
-	color: var(--overlay-text);
-	border-radius: 3px;
-	padding: 0 2px;
+	border-radius: 4px;
+	padding: 0 3px;
 	overflow: hidden;
 	cursor: pointer;
-	font-family: system-ui, sans-serif;
-	line-height: 1.12;
-	/* Set from JS: font-size is derived from the block's height in image pixels. */
+	font-family: system-ui, -apple-system, sans-serif;
+	line-height: 1.14;
+	letter-spacing: -0.15px;
+	animation: region-in 0.3s var(--ease) backwards;
+	transition: box-shadow 0.15s var(--ease);
 }
 
-.region.title {
+.region:hover {
+	box-shadow: 0 0 0 2px rgb(26 115 232 / 55%);
+}
+
+.region.is-title {
 	font-weight: 700;
 }
 
-.region.low {
-	background: #fff4d6;
+.region.is-low {
+	box-shadow: inset 0 -2px 0 rgb(197 53 27 / 45%);
+}
+
+/*
+ * A translation can be longer than the source it has to sit inside. When even
+ * the minimum font size overflows, the text is clipped rather than allowed to
+ * break the layout, and this cue tells the user the rest is a tap away.
+ */
+.region.is-clipped::after {
+	content: "";
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	width: 16px;
+	height: 100%;
+	background: linear-gradient(to right, transparent, rgb(0 0 0 / 22%));
+	pointer-events: none;
 }
 
 .region span {
@@ -185,23 +522,87 @@ button:disabled {
 	width: 100%;
 }
 
-.status {
-	color: var(--muted);
-	font-size: 14px;
+@keyframes region-in {
+	from {
+		opacity: 0;
+		transform: translateY(3px);
+	}
+}
+
+/* scanning sweep while the request is in flight */
+
+.scanner {
+	position: absolute;
+	inset: 0;
+	overflow: hidden;
+	pointer-events: none;
+}
+
+.scanner::after {
+	content: "";
+	position: absolute;
+	left: 0;
+	right: 0;
+	height: 38%;
+	background: linear-gradient(
+		to bottom,
+		transparent,
+		rgb(26 115 232 / 16%) 45%,
+		rgb(26 115 232 / 40%) 50%,
+		rgb(26 115 232 / 16%) 55%,
+		transparent
+	);
+	animation: sweep 1.25s var(--ease) infinite;
+}
+
+@keyframes sweep {
+	from {
+		transform: translateY(-110%);
+	}
+	to {
+		transform: translateY(275%);
+	}
+}
+
+/* ------------------------------------------------------------------ toast */
+
+.toast {
+	position: fixed;
+	top: calc(max(12px, env(safe-area-inset-top)) + 54px);
+	left: 50%;
+	transform: translateX(-50%);
+	z-index: 40;
 	display: flex;
 	align-items: center;
 	gap: 9px;
-	min-height: 20px;
+	max-width: min(440px, calc(100% - 28px));
+	padding: 10px 16px;
+	border-radius: 999px;
+	background: var(--surface);
+	backdrop-filter: var(--blur);
+	-webkit-backdrop-filter: var(--blur);
+	border: 1px solid var(--border);
+	box-shadow: var(--shadow-sm);
+	font-size: 13.5px;
+	animation: toast-in 0.22s var(--ease);
 }
 
-.status.error {
-	color: #ff9b9b;
+.toast.is-error {
+	color: var(--danger);
+	border-color: rgb(197 53 27 / 26%);
+}
+
+@keyframes toast-in {
+	from {
+		opacity: 0;
+		transform: translate(-50%, -7px);
+	}
 }
 
 .spinner {
 	width: 14px;
 	height: 14px;
-	border: 2px solid var(--line);
+	border: 2px solid rgb(15 23 42 / 14%);
 	border-top-color: var(--accent);
 	border-radius: 50%;
 	animation: spin 0.7s linear infinite;
@@ -214,50 +615,147 @@ button:disabled {
 	}
 }
 
-.controls {
-	display: flex;
-	gap: 10px;
-	flex-wrap: wrap;
-	justify-content: center;
-}
-
-.meta {
-	color: var(--muted);
-	font-size: 12.5px;
-	margin: 0;
-	text-align: center;
-	min-height: 16px;
-}
+/* ------------------------------------------------------------------- peek */
 
 .peek {
 	position: fixed;
 	left: 50%;
 	transform: translateX(-50%);
-	bottom: max(16px, env(safe-area-inset-bottom));
-	width: min(560px, calc(100% - 28px));
-	background: var(--panel);
-	border: 1px solid var(--line);
-	border-radius: 12px;
-	padding: 12px 14px;
-	z-index: 10;
-	box-shadow: 0 10px 30px rgb(0 0 0 / 45%);
+	bottom: calc(var(--dock-bottom) + 150px);
+	z-index: 35;
+	width: min(480px, calc(100% - 28px));
+	padding: 12px 15px 14px;
+	border-radius: 16px;
+	background: var(--surface);
+	backdrop-filter: var(--blur);
+	-webkit-backdrop-filter: var(--blur);
+	border: 1px solid var(--border);
+	box-shadow: var(--shadow-lg);
+	animation: toast-in 0.2s var(--ease);
 }
 
-.peek-label {
-	color: var(--muted);
-	font-size: 11px;
+.peek-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.peek-tag {
+	font-size: 10.5px;
+	font-weight: 700;
 	text-transform: uppercase;
-	letter-spacing: 0.7px;
+	letter-spacing: 0.9px;
+	color: var(--muted);
+}
+
+.peek-close {
+	display: grid;
+	place-items: center;
+	width: 24px;
+	height: 24px;
+	margin-right: -4px;
+	border-radius: 50%;
+	color: var(--muted);
+}
+
+.peek-close:hover {
+	background: rgb(15 23 42 / 7%);
 }
 
 .peek p {
 	margin: 5px 0 0;
 	font-size: 15px;
-	line-height: 1.4;
+	line-height: 1.42;
+}
+
+#peek-translation {
+	font-weight: 550;
+}
+
+.peek-source {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	margin-top: 9px !important;
+	padding-top: 9px;
+	border-top: 1px solid var(--border);
+	color: var(--muted);
+	font-size: 14px !important;
+}
+
+.peek-source .peek-tag {
+	flex: none;
+}
+
+/* ------------------------------------------------------------- responsive */
+
+/*
+ * Short screens are height-constrained, not width-constrained: the photo is
+ * boxed in by the topbar and the sheet. Reclaiming that padding buys real
+ * pixels for the overlay, which is what decides whether text has to be clipped.
+ */
+@media (max-height: 720px) {
+	.viewer {
+		padding: 62px 8px calc(var(--dock-bottom) + 112px);
+	}
+
+	.peek {
+		bottom: calc(var(--dock-bottom) + 124px);
+	}
+}
+
+/* Desktop: the viewer gets breathing room and the sheet becomes a panel. */
+@media (min-width: 760px) {
+	.viewer {
+		padding: 84px 28px 116px;
+	}
+
+	.sheet {
+		left: 50%;
+		right: auto;
+		bottom: 22px;
+		transform: translateX(-50%) translateY(14px);
+		width: min(580px, calc(100% - 44px));
+		border-radius: 20px;
+		border: 1px solid var(--border);
+	}
+
+	body[data-state="result"] .sheet {
+		transform: translateX(-50%);
+	}
+
+	.peek {
+		bottom: 150px;
+	}
+
+	.camerabar {
+		background: none;
+	}
+
+	.camerabar .round-ghost {
+		color: var(--text);
+		background: var(--surface);
+		border-color: var(--border);
+		box-shadow: var(--shadow-sm);
+	}
+
+	.shutter {
+		background: var(--surface);
+		border-color: #fff;
+		box-shadow: var(--shadow-lg);
+	}
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.spinner {
-		animation-duration: 2s;
+	*,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+
+	.scanner::after {
+		animation: none;
+		opacity: 0.25;
 	}
 }

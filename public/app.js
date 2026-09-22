@@ -1,106 +1,251 @@
 /**
  * Translate - client.
  *
- * The browser owns three jobs the Worker deliberately does not:
- *  1. Downscaling and JPEG encoding, so the Worker never burns CPU on pixels.
- *  2. EXIF orientation, so a phone photo is upright before OCR sees it.
- *  3. Overlay rendering, which needs no server-side image toolchain.
+ * Screens are driven by `body[data-state]`, which CSS alone turns into the
+ * right layer + dock. States: camera | captured | working | result | upload.
  *
- * OCR block coordinates come back as pixels in the space of the image we
- * uploaded. Because we uploaded the downscaled bitmap, that space is exactly
- * the bitmap we are displaying, so positioning is a pure percentage mapping.
+ * The browser owns four jobs the Worker deliberately does not:
+ *  1. The live viewfinder and capture.
+ *  2. Downscaling and JPEG encoding, so the Worker never burns CPU on pixels.
+ *  3. EXIF orientation, so a phone photo is upright before OCR sees it.
+ *  4. Overlay rendering and colour sampling, which need no server image stack.
+ *
+ * Geometry contract: OCR block coordinates are pixels in the space of the
+ * image we uploaded. We display that exact bitmap, and the frame is locked to
+ * its aspect ratio, so positioning is a pure percentage mapping.
  */
 
-/** Longest edge we upload. Bigger costs bytes and latency without helping OCR. */
-const MAX_EDGE = 1600;
+const MAX_EDGE = 1600; // longest edge we upload; larger costs latency, not accuracy
 const JPEG_QUALITY = 0.85;
-
-const el = {
-	target: document.getElementById("target"),
-	start: document.getElementById("start"),
-	stage: document.getElementById("stage"),
-	take: document.getElementById("take"),
-	pick: document.getElementById("pick"),
-	camera: document.getElementById("camera"),
-	file: document.getElementById("file"),
-	frame: document.getElementById("frame"),
-	photo: document.getElementById("photo"),
-	overlay: document.getElementById("overlay"),
-	status: document.getElementById("status"),
-	controls: document.getElementById("controls"),
-	toggle: document.getElementById("toggle"),
-	download: document.getElementById("download"),
-	again: document.getElementById("again"),
-	meta: document.getElementById("meta"),
-	peek: document.getElementById("peek"),
-	peekText: document.getElementById("peek-text"),
-};
-
-/** Current render state. */
-let current = { bitmap: null, dataUrl: null, result: null };
-
-/* ---------------------------------------------------------------- languages */
-
 const STORAGE_KEY = "translate.target";
 
+const el = {};
+for (const id of [
+	"video", "viewer", "frame", "photo", "overlay", "scanner", "dropzone",
+	"primer", "allow-camera", "primer-pick",
+	"dropnote", "choose", "enable-camera", "target", "toast", "camerabar",
+	"pick", "shutter", "flip", "sheet", "sheet-title", "sheet-sub", "retake",
+	"toggle", "toggle-label", "download", "peek", "peek-text", "peek-close",
+	"peek-translation", "camera-input", "file",
+]) {
+	el[id] = document.getElementById(id);
+}
+
+/** Current photo + result. */
+let current = { bitmap: null, dataUrl: null, result: null, colors: [] };
+let stream = null;
+let facing = "environment";
+let inFlight = 0; // ignore responses from superseded requests
+
+const setState = (state) => (document.body.dataset.state = state);
+const stateIs = (state) => document.body.dataset.state === state;
+
+/* --------------------------------------------------------------- languages */
+
 async function loadLanguages() {
-	const fallback = { en: "English", es: "Spanish", fr: "French", de: "German" };
-	let languages = fallback;
+	let languages = { en: "English", es: "Spanish", fr: "French", de: "German" };
 	try {
 		const response = await fetch("/api/languages");
-		if (response.ok) languages = (await response.json()).languages ?? fallback;
+		if (response.ok) languages = (await response.json()).languages ?? languages;
 	} catch {
-		/* offline: the fallback list still lets the UI render */
+		/* offline: fallback list still lets the UI work */
 	}
 	const saved = localStorage.getItem(STORAGE_KEY) ?? "en";
-	el.target.innerHTML = "";
-	for (const [code, name] of Object.entries(languages)) {
-		const option = document.createElement("option");
-		option.value = code;
-		option.textContent = name;
-		if (code === saved) option.selected = true;
-		el.target.append(option);
-	}
+	el.target.replaceChildren(
+		...Object.entries(languages).map(([code, name]) => {
+			const option = document.createElement("option");
+			option.value = code;
+			option.textContent = name;
+			option.selected = code === saved;
+			return option;
+		}),
+	);
 }
 
 el.target.addEventListener("change", () => {
 	localStorage.setItem(STORAGE_KEY, el.target.value);
-	// Re-run against the image already on screen rather than making the user
-	// take the photo again.
+	// Re-translate the photo already on screen rather than making the user retake it.
 	if (current.dataUrl) translate(current.dataUrl);
 });
 
-/* -------------------------------------------------------------- image input */
+/* ------------------------------------------------------------------ camera */
 
-el.take.addEventListener("click", () => el.camera.click());
+/** Phones and tablets get the viewfinder first; desktops get the upload card. */
+const prefersCamera = matchMedia("(pointer: coarse)").matches;
+
+/**
+ * Show our own explanation before the browser's permission dialog, so the user
+ * knows why the camera is being requested. Skipped once permission is already
+ * granted, so returning users land straight on the viewfinder.
+ */
+async function bootCamera() {
+	let permission = "prompt";
+	try {
+		const status = await navigator.permissions?.query({ name: "camera" });
+		if (status?.state) permission = status.state;
+	} catch {
+		// Safari has no 'camera' permission descriptor; fall through to the primer.
+	}
+	if (permission === "granted") await startCamera();
+	else setState("primer");
+}
+
+el["allow-camera"].addEventListener("click", () => startCamera({ userInitiated: true }));
+el["primer-pick"].addEventListener("click", () => el.file.click());
+
+async function startCamera({ userInitiated = false } = {}) {
+	if (!navigator.mediaDevices?.getUserMedia) {
+		return fallbackToUpload("This browser has no camera access.");
+	}
+	// getUserMedia needs a secure context. file:// or plain http on a LAN IP
+	// will fail here, which is confusing unless we say so.
+	if (!window.isSecureContext) {
+		return fallbackToUpload("Camera needs HTTPS. Use localhost or a secure URL.");
+	}
+
+	stopCamera();
+	try {
+		stream = await navigator.mediaDevices.getUserMedia({
+			video: { facingMode: { ideal: facing }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+			audio: false,
+		});
+	} catch (error) {
+		const denied = error.name === "NotAllowedError";
+		return fallbackToUpload(
+			denied ? "Camera permission denied." : "No camera available.",
+			userInitiated && denied,
+		);
+	}
+
+	el.video.srcObject = stream;
+	await el.video.play().catch(() => {});
+	// Only offer the flip control when there is more than one camera.
+	const cameras = await navigator.mediaDevices
+		.enumerateDevices()
+		.then((d) => d.filter((x) => x.kind === "videoinput").length)
+		.catch(() => 1);
+	el.flip.hidden = cameras < 2;
+	setState("camera");
+}
+
+function stopCamera() {
+	stream?.getTracks().forEach((track) => track.stop());
+	stream = null;
+	el.video.srcObject = null;
+}
+
+function fallbackToUpload(reason, loud = false) {
+	stopCamera();
+	el.dropnote.textContent = `${reason} Drop an image here, or choose one instead.`;
+	setState("upload");
+	if (loud) showToast(reason, true);
+}
+
+el["enable-camera"].addEventListener("click", () => startCamera({ userInitiated: true }));
+el.flip.addEventListener("click", () => {
+	facing = facing === "environment" ? "user" : "environment";
+	startCamera();
+});
+
+/**
+ * The viewfinder is `object-fit: cover`, so the element shows a centred crop of
+ * the camera frame — a 16:9 stream on a tall phone hides most of its width.
+ * Capturing the raw frame would therefore translate text the user never saw.
+ * This reproduces the same crop so the photo matches the preview exactly, on
+ * every screen shape.
+ */
+async function captureVisibleFrame(video) {
+	const frameW = video.videoWidth;
+	const frameH = video.videoHeight;
+	const viewW = video.clientWidth;
+	const viewH = video.clientHeight;
+
+	// `cover` scales by whichever axis needs the most magnification.
+	const scale = Math.max(viewW / frameW, viewH / frameH);
+	const cropW = Math.min(frameW, Math.round(viewW / scale));
+	const cropH = Math.min(frameH, Math.round(viewH / scale));
+	const cropX = Math.round((frameW - cropW) / 2);
+	const cropY = Math.round((frameH - cropH) / 2);
+
+	const canvas = new OffscreenCanvas(cropW, cropH);
+	canvas.getContext("2d").drawImage(video, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+	return createImageBitmap(canvas);
+}
+
+el.shutter.addEventListener("click", async () => {
+	if (!stream || !el.video.videoWidth) return;
+	el.shutter.disabled = true;
+	try {
+		await accept(await captureVisibleFrame(el.video));
+	} catch (error) {
+		showToast(`Capture failed: ${error.message}`, true);
+	} finally {
+		el.shutter.disabled = false;
+	}
+});
+
+// Pause the camera while backgrounded; resume when the user returns.
+document.addEventListener("visibilitychange", () => {
+	if (document.hidden) stopCamera();
+	else if (stateIs("camera")) startCamera();
+});
+
+/* ------------------------------------------------------------- file inputs */
+
 el.pick.addEventListener("click", () => el.file.click());
-el.camera.addEventListener("change", onFile);
-el.file.addEventListener("change", onFile);
-el.again.addEventListener("click", reset);
+el.choose.addEventListener("click", () => el.file.click());
+el.file.addEventListener("change", onFileInput);
+el["camera-input"].addEventListener("change", onFileInput);
 
-async function onFile(event) {
+async function onFileInput(event) {
 	const file = event.target.files?.[0];
 	event.target.value = "";
-	if (!file) return;
+	if (file) await acceptFile(file);
+}
 
+// Drag and drop onto the upload card.
+for (const type of ["dragenter", "dragover"]) {
+	el.dropzone.addEventListener(type, (e) => {
+		e.preventDefault();
+		el.dropzone.classList.add("dragging");
+	});
+}
+for (const type of ["dragleave", "drop"]) {
+	el.dropzone.addEventListener(type, (e) => {
+		e.preventDefault();
+		el.dropzone.classList.remove("dragging");
+	});
+}
+el.dropzone.addEventListener("drop", (e) => {
+	const file = e.dataTransfer?.files?.[0];
+	if (file?.type.startsWith("image/")) acceptFile(file);
+});
+
+async function acceptFile(file) {
 	try {
-		// `from-image` applies the EXIF rotation, so a sideways phone photo is
-		// upright before OCR sees it. Without this, every box would be rotated.
+		// `from-image` applies EXIF rotation, so a sideways phone photo is
+		// upright before OCR sees it. Without it every box would be rotated.
 		const source = await createImageBitmap(file, { imageOrientation: "from-image" });
-		const bitmap = await downscale(source);
-		const dataUrl = await toJpegDataUrl(bitmap);
-
-		current = { bitmap, dataUrl, result: null };
-		el.photo.src = dataUrl;
-		el.start.hidden = true;
-		el.stage.hidden = false;
-		await translate(dataUrl);
+		await accept(source);
 	} catch (error) {
-		showError(`Could not read that image: ${error.message}`);
+		showToast(`Could not read that image: ${error.message}`, true);
 	}
 }
 
-/** Fit inside MAX_EDGE, preserving aspect. Returns the original if small enough. */
+/** Shared entry point for camera frames and picked files. */
+async function accept(sourceBitmap) {
+	const bitmap = await downscale(sourceBitmap);
+	const dataUrl = await toJpegDataUrl(bitmap);
+	stopCamera();
+
+	current = { bitmap, dataUrl, result: null, colors: [] };
+	el.photo.src = dataUrl;
+	el.frame.style.aspectRatio = `${bitmap.width} / ${bitmap.height}`;
+	el.overlay.replaceChildren();
+	setState("captured");
+	await translate(dataUrl);
+}
+
 async function downscale(bitmap) {
 	const longest = Math.max(bitmap.width, bitmap.height);
 	if (longest <= MAX_EDGE) return bitmap;
@@ -108,8 +253,7 @@ async function downscale(bitmap) {
 	const width = Math.round(bitmap.width * scale);
 	const height = Math.round(bitmap.height * scale);
 	const canvas = new OffscreenCanvas(width, height);
-	const context = canvas.getContext("2d");
-	context.drawImage(bitmap, 0, 0, width, height);
+	canvas.getContext("2d").drawImage(bitmap, 0, 0, width, height);
 	return createImageBitmap(canvas);
 }
 
@@ -117,7 +261,7 @@ async function toJpegDataUrl(bitmap) {
 	const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
 	canvas.getContext("2d").drawImage(bitmap, 0, 0);
 	const blob = await canvas.convertToBlob({ type: "image/jpeg", quality: JPEG_QUALITY });
-	return await new Promise((resolve, reject) => {
+	return new Promise((resolve, reject) => {
 		const reader = new FileReader();
 		reader.onload = () => resolve(reader.result);
 		reader.onerror = () => reject(new Error("could not encode image"));
@@ -125,13 +269,14 @@ async function toJpegDataUrl(bitmap) {
 	});
 }
 
-/* ------------------------------------------------------------------ request */
+/* ----------------------------------------------------------------- request */
 
 async function translate(dataUrl) {
-	setBusy("Reading the image…");
-	el.controls.hidden = true;
-	el.overlay.innerHTML = "";
-	el.meta.textContent = "";
+	const ticket = ++inFlight;
+	setState("working");
+	el.scanner.hidden = false;
+	el.overlay.replaceChildren();
+	showToast("Reading the image…", false, true);
 
 	try {
 		const response = await fetch("/api/translate", {
@@ -140,102 +285,173 @@ async function translate(dataUrl) {
 			body: JSON.stringify({ image: dataUrl, target: el.target.value }),
 		});
 		const payload = await response.json();
+		if (ticket !== inFlight) return; // a newer request already won
 		if (!response.ok) throw new Error(payload.error ?? `request failed (${response.status})`);
 
+		el.scanner.hidden = true;
 		current.result = payload;
+
 		if (payload.regions.length === 0) {
-			showError("No text found in that image.");
-			el.controls.hidden = false;
+			setState("result");
+			hideToast();
+			el["sheet-title"].textContent = "No text found";
+			el["sheet-sub"].textContent = "Try getting closer, or steadier.";
 			return;
 		}
 
+		current.colors = sampleColors(current.bitmap, payload.regions);
 		render(payload);
-		clearStatus();
-		el.controls.hidden = false;
+		setState("result");
+		hideToast();
 
 		const missing = payload.regions.filter((r) => !r.translatedOk).length;
-		el.meta.textContent =
-			`${payload.regions.length} regions · detected ${payload.detectedLanguage} · ` +
-			`OCR ${payload.timings.ocrMs} ms · translate ${payload.timings.translateMs} ms` +
+		el["sheet-title"].textContent = `${payload.detectedLanguage.toUpperCase()} → ${el.target.value.toUpperCase()}`;
+		el["sheet-sub"].textContent =
+			`${payload.regions.length} regions · ${payload.timings.totalMs} ms` +
 			(missing ? ` · ${missing} untranslated` : "");
 	} catch (error) {
-		showError(error.message);
-		el.controls.hidden = false;
+		if (ticket !== inFlight) return;
+		el.scanner.hidden = true;
+		setState("result");
+		el["sheet-title"].textContent = "Could not translate";
+		el["sheet-sub"].textContent = error.message;
+		showToast(error.message, true);
 	}
+}
+
+/* ------------------------------------------------------------ colour match */
+
+/**
+ * Sample each box's background straight from the photo so the chip sits in the
+ * image instead of on top of it. Only the box's outer edge is read: the middle
+ * is mostly glyphs, the rim is mostly background.
+ */
+function sampleColors(bitmap, regions) {
+	const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+	const ctx = canvas.getContext("2d", { willReadFrequently: true });
+	ctx.drawImage(bitmap, 0, 0);
+
+	return regions.map(({ box }) => {
+		const x = Math.max(0, Math.min(box.x, bitmap.width - 1));
+		const y = Math.max(0, Math.min(box.y, bitmap.height - 1));
+		const w = Math.max(1, Math.min(box.w, bitmap.width - x));
+		const h = Math.max(1, Math.min(box.h, bitmap.height - y));
+
+		let data;
+		try {
+			data = ctx.getImageData(x, y, w, h).data;
+		} catch {
+			return { bg: "#ffffff", fg: "#10151c" };
+		}
+
+		let r = 0, g = 0, b = 0, n = 0;
+		const edge = Math.max(1, Math.round(Math.min(w, h) * 0.18));
+		for (let row = 0; row < h; row++) {
+			const vertical = row < edge || row >= h - edge;
+			for (let col = 0; col < w; col++) {
+				if (!vertical && col >= edge && col < w - edge) continue;
+				const i = (row * w + col) * 4;
+				r += data[i];
+				g += data[i + 1];
+				b += data[i + 2];
+				n++;
+			}
+		}
+		if (!n) return { bg: "#ffffff", fg: "#10151c" };
+		r = Math.round(r / n);
+		g = Math.round(g / n);
+		b = Math.round(b / n);
+
+		// Perceptual luminance decides whether text should be dark or light.
+		const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+		return {
+			bg: `rgb(${r} ${g} ${b})`,
+			fg: luminance > 0.55 ? "#10151c" : "#ffffff",
+		};
+	});
 }
 
 /* ----------------------------------------------------------------- overlay */
 
 function render(result) {
-	el.overlay.innerHTML = "";
-
-	for (const region of result.regions) {
+	const nodes = result.regions.map((region, index) => {
+		const color = current.colors[index] ?? { bg: "#fff", fg: "#10151c" };
 		const node = document.createElement("div");
 		node.className = "region";
-		if (region.type === "title") node.classList.add("title");
-		if (region.confidence !== null && region.confidence < 0.7) node.classList.add("low");
+		if (region.type === "title") node.classList.add("is-title");
+		if (region.confidence !== null && region.confidence < 0.7) node.classList.add("is-low");
 
-		// Percentages keep the box glued to the artwork at any rendered size.
 		node.style.left = `${(region.box.x / result.width) * 100}%`;
 		node.style.top = `${(region.box.y / result.height) * 100}%`;
 		node.style.width = `${(region.box.w / result.width) * 100}%`;
 		node.style.height = `${(region.box.h / result.height) * 100}%`;
+		node.style.background = color.bg;
+		node.style.color = color.fg;
+		node.style.animationDelay = `${Math.min(index * 18, 320)}ms`;
 
 		const span = document.createElement("span");
 		span.textContent = region.translated;
 		node.append(span);
+		node.addEventListener("click", () => showPeek(region));
+		return node;
+	});
 
-		node.addEventListener("click", () => showPeek(region.source));
-		el.overlay.append(node);
-	}
-
+	el.overlay.replaceChildren(...nodes);
 	fitAllText();
 }
 
+/** Below this the text stops being readable, so we clip instead of shrinking. */
+const MIN_FONT_PX = 5;
+
 /**
- * Font size is derived from each block's height in image pixels, converted to
- * displayed pixels. If the translation is longer than the source it will
- * overflow the box, so shrink until it fits or we hit a readability floor.
+ * Font size derives from each block's height in image pixels, scaled to display
+ * pixels. A translation longer than its source will overflow, so shrink until
+ * it fits. On a narrow phone some boxes cannot fit at any readable size; those
+ * get marked `is-clipped` and stay reachable by tapping.
  */
 function fitAllText() {
 	const result = current.result;
-	if (!result) return;
+	if (!result?.regions?.length) return;
 	const scale = el.frame.clientWidth / result.width;
 	if (!scale || !Number.isFinite(scale)) return;
+
+	const overflows = (node) =>
+		node.scrollWidth > node.clientWidth + 1 || node.scrollHeight > node.clientHeight + 1;
 
 	const nodes = el.overlay.children;
 	for (let i = 0; i < nodes.length; i++) {
 		const node = nodes[i];
-		const region = result.regions[i];
-		const boxHeight = region.box.h * scale;
-
-		let size = Math.max(6, boxHeight * 0.74);
+		let size = Math.max(MIN_FONT_PX, result.regions[i].box.h * scale * 0.74);
 		node.style.fontSize = `${size}px`;
 
-		// Shrink to fit. Bounded loop: never more than 12 reflows per region.
-		for (let step = 0; step < 12; step++) {
-			const overflows =
-				node.scrollWidth > node.clientWidth + 1 || node.scrollHeight > node.clientHeight + 1;
-			if (!overflows || size <= 6) break;
-			size *= 0.88;
+		while (overflows(node) && size > MIN_FONT_PX) {
+			size = Math.max(MIN_FONT_PX, size * 0.9);
 			node.style.fontSize = `${size}px`;
 		}
+		node.classList.toggle("is-clipped", overflows(node));
 	}
 }
 
-// The frame resizes with the viewport; font sizes are in px so they must follow.
 new ResizeObserver(() => fitAllText()).observe(el.frame);
 
-/* ----------------------------------------------------------------- controls */
+/* ---------------------------------------------------------------- controls */
 
-el.toggle.addEventListener("click", () => {
-	const hidden = el.overlay.classList.toggle("hidden");
-	el.toggle.textContent = hidden ? "Show translation" : "Show original";
-	el.toggle.setAttribute("aria-pressed", String(!hidden));
-});
+// Press and hold to compare against the original.
+const showOriginal = (on) => {
+	el.overlay.classList.toggle("muted", on);
+	el.toggle.setAttribute("aria-pressed", String(!on));
+	el["toggle-label"].textContent = on ? "Showing original" : "Hold to compare";
+};
+for (const type of ["pointerdown"]) el.toggle.addEventListener(type, () => showOriginal(true));
+for (const type of ["pointerup", "pointerleave", "pointercancel"]) {
+	el.toggle.addEventListener(type, () => showOriginal(false));
+}
+
+el.retake.addEventListener("click", reset);
+el["peek-close"].addEventListener("click", () => (el.peek.hidden = true));
 
 el.download.addEventListener("click", async () => {
-	if (!current.result || !current.bitmap) return;
+	if (!current.result?.regions?.length || !current.bitmap) return;
 	const blob = await compose();
 	const url = URL.createObjectURL(blob);
 	const link = document.createElement("a");
@@ -243,78 +459,86 @@ el.download.addEventListener("click", async () => {
 	link.download = `translate-${current.result.targetLanguage}.png`;
 	link.click();
 	URL.revokeObjectURL(url);
+	showToast("Saved");
+	setTimeout(hideToast, 1600);
 });
 
-/** Flatten photo + overlay into a single PNG at full bitmap resolution. */
+/** Flatten photo + overlay into one PNG at full bitmap resolution. */
 async function compose() {
-	const { bitmap, result } = current;
+	const { bitmap, result, colors } = current;
 	const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
 	const ctx = canvas.getContext("2d");
 	ctx.drawImage(bitmap, 0, 0);
 
-	for (const region of result.regions) {
+	result.regions.forEach((region, index) => {
 		const { x, y, w, h } = region.box;
-		ctx.fillStyle = "#fffdf7";
+		const color = colors[index] ?? { bg: "#ffffff", fg: "#10151c" };
+		ctx.fillStyle = color.bg;
 		ctx.fillRect(x, y, w, h);
 
-		ctx.fillStyle = "#14181e";
+		ctx.fillStyle = color.fg;
 		ctx.textBaseline = "middle";
 		const weight = region.type === "title" ? "700" : "400";
 		let size = Math.max(7, h * 0.74);
 		do {
 			ctx.font = `${weight} ${size}px system-ui, sans-serif`;
-			if (ctx.measureText(region.translated).width <= w - 4) break;
+			if (ctx.measureText(region.translated).width <= w - 6) break;
 			size *= 0.9;
 		} while (size > 7);
+
 		ctx.save();
 		ctx.beginPath();
 		ctx.rect(x, y, w, h);
 		ctx.clip();
-		ctx.fillText(region.translated, x + 2, y + h / 2);
+		ctx.fillText(region.translated, x + 3, y + h / 2);
 		ctx.restore();
-	}
+	});
 	return canvas.convertToBlob({ type: "image/png" });
 }
 
-function showPeek(text) {
-	el.peekText.textContent = text;
+/** Full text for a region, so a clipped box is never a dead end. */
+function showPeek(region) {
+	el["peek-translation"].textContent = region.translated;
+	el["peek-text"].textContent = region.source;
 	el.peek.hidden = false;
 	clearTimeout(showPeek.timer);
-	showPeek.timer = setTimeout(() => (el.peek.hidden = true), 4000);
+	showPeek.timer = setTimeout(() => (el.peek.hidden = true), 6000);
 }
 
 function reset() {
-	current = { bitmap: null, dataUrl: null, result: null };
-	el.overlay.innerHTML = "";
+	inFlight++;
+	current = { bitmap: null, dataUrl: null, result: null, colors: [] };
+	el.overlay.replaceChildren();
 	el.photo.removeAttribute("src");
-	el.stage.hidden = true;
-	el.start.hidden = false;
-	el.controls.hidden = true;
 	el.peek.hidden = true;
-	clearStatus();
-	el.meta.textContent = "";
+	el.scanner.hidden = true;
+	hideToast();
+	if (stream) startCamera();
+	else if (prefersCamera) bootCamera();
+	else setState("upload");
 }
 
-/* ------------------------------------------------------------------- status */
+/* ------------------------------------------------------------------- toast */
 
-function setBusy(message) {
-	el.status.className = "status";
-	el.status.hidden = false;
-	el.status.innerHTML = "";
-	const spinner = document.createElement("div");
-	spinner.className = "spinner";
-	el.status.append(spinner, document.createTextNode(message));
+function showToast(message, isError = false, busy = false) {
+	el.toast.className = `toast${isError ? " is-error" : ""}`;
+	el.toast.hidden = false;
+	el.toast.replaceChildren();
+	if (busy) {
+		const spinner = document.createElement("div");
+		spinner.className = "spinner";
+		el.toast.append(spinner);
+	}
+	el.toast.append(document.createTextNode(message));
 }
 
-function showError(message) {
-	el.status.className = "status error";
-	el.status.hidden = false;
-	el.status.textContent = message;
+function hideToast() {
+	el.toast.hidden = true;
+	el.toast.replaceChildren();
 }
 
-function clearStatus() {
-	el.status.hidden = true;
-	el.status.textContent = "";
-}
+/* -------------------------------------------------------------------- boot */
 
-loadLanguages();
+await loadLanguages();
+if (prefersCamera) await bootCamera();
+else setState("upload");

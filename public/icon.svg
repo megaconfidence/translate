@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Translate">
+	<circle cx="16" cy="16" r="16" fill="#1a73e8" />
+	<text
+		x="16"
+		y="16.5"
+		fill="#fff"
+		font-family="system-ui, -apple-system, 'Segoe UI', 'Hiragino Sans', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif"
+		font-size="19"
+		font-weight="600"
+		text-anchor="middle"
+		dominant-baseline="central"
+	>文</text>
+</svg>
