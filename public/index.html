@@ -1,20 +1,59 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>Hello, World!</title>
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+		<meta name="theme-color" content="#11161d" />
+		<title>Translate</title>
+		<link
+			rel="icon"
+			href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>文</text></svg>"
+		/>
+		<link rel="stylesheet" href="/styles.css" />
 	</head>
 	<body>
-		<h1 id="heading"></h1>
-		<p>This page comes from a static asset stored at `public/index.html` as configured in `wrangler.jsonc`.</p>
-		<script>
-			fetch('/message')
-				.then((resp) => resp.text())
-				.then((text) => {
-					const h1 = document.getElementById('heading');
-					h1.textContent = text;
-				});
-		</script>
+		<header class="bar">
+			<h1>Translate</h1>
+			<label class="field">
+				<span class="field-label">Into</span>
+				<select id="target"></select>
+			</label>
+		</header>
+
+		<main id="main">
+			<section id="start" class="panel">
+				<p class="lede">Photograph a menu, sign or notice and read it in your language.</p>
+				<div class="actions">
+					<button id="take" class="primary">Take photo</button>
+					<button id="pick" class="secondary">Choose image</button>
+				</div>
+				<input id="camera" type="file" accept="image/*" capture="environment" hidden />
+				<input id="file" type="file" accept="image/jpeg,image/png,image/webp" hidden />
+			</section>
+
+			<section id="stage" class="stage" hidden>
+				<div id="frame" class="frame">
+					<img id="photo" alt="" />
+					<div id="overlay" class="overlay" aria-live="polite"></div>
+				</div>
+
+				<div id="status" class="status" hidden></div>
+
+				<div id="controls" class="controls" hidden>
+					<button id="toggle" class="secondary" aria-pressed="true">Show original</button>
+					<button id="download" class="secondary">Download</button>
+					<button id="again" class="secondary">New photo</button>
+				</div>
+
+				<p id="meta" class="meta"></p>
+			</section>
+		</main>
+
+		<div id="peek" class="peek" hidden>
+			<span class="peek-label">Original</span>
+			<p id="peek-text"></p>
+		</div>
+
+		<script src="/app.js" type="module"></script>
 	</body>
 </html>
