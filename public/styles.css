@@ -1,26 +1,35 @@
 /*
  * Translate - light, glassy, camera-first.
  *
- * Layout model: three full-viewport layers (video / viewer / dropzone) stacked
- * at the back, with floating chrome docked over them. `body[data-state]` is the
- * single switch that decides which layer and which dock are visible, so the JS
- * never has to touch individual `hidden` flags to change screen.
+ * Layout model: full-viewport layers (video / viewer / dropzone / primer) at the
+ * back, with floating chrome docked over them. `body[data-state]` is the single
+ * switch deciding which layer and dock are visible, so JS never toggles
+ * individual `hidden` flags to change screen.
+ *
+ * Transparency rule: chrome is glass, content is not. Bars, sheets and toasts
+ * are translucent so the photo reads through them. Translation chips stay
+ * opaque — they carry a colour sampled from the photo beneath, so blending them
+ * into it would destroy both the colour match and the legibility.
  */
 
 :root {
-	--bg: #f6f7f9;
-	--surface: rgb(255 255 255 / 78%);
-	--surface-solid: #fff;
-	--border: rgb(15 23 42 / 8%);
-	--text: #10151c;
+	--bg: #f4f6f8;
+	--glass: rgb(255 255 255 / 62%);
+	--glass-strong: rgb(255 255 255 / 80%);
+	--hairline: rgb(255 255 255 / 55%);
+	--border: rgb(15 23 42 / 7%);
+	--text: #0d1218;
 	--muted: #5d6b7f;
 	--accent: #1a73e8;
 	--danger: #c5351b;
-	--shadow-sm: 0 1px 2px rgb(15 23 42 / 8%), 0 2px 10px rgb(15 23 42 / 6%);
-	--shadow-lg: 0 6px 16px rgb(15 23 42 / 10%), 0 18px 50px rgb(15 23 42 / 14%);
-	--blur: saturate(180%) blur(20px);
+	--shadow-sm: 0 1px 2px rgb(15 23 42 / 6%), 0 4px 14px rgb(15 23 42 / 7%);
+	--shadow-md: 0 2px 6px rgb(15 23 42 / 7%), 0 10px 30px rgb(15 23 42 / 10%);
+	--shadow-lg: 0 8px 20px rgb(15 23 42 / 10%), 0 26px 64px rgb(15 23 42 / 16%);
+	--blur: saturate(180%) blur(22px);
+	--blur-soft: saturate(150%) blur(12px);
 	--dock-bottom: max(18px, env(safe-area-inset-bottom));
 	--ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+	--spring: cubic-bezier(0.34, 1.3, 0.64, 1);
 }
 
 * {
@@ -44,8 +53,9 @@ body {
 	overflow: hidden;
 	background: var(--bg);
 	color: var(--text);
-	font-family:
-		system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+	font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+	font-synthesis-weight: none;
+	-webkit-font-smoothing: antialiased;
 	-webkit-text-size-adjust: 100%;
 	overscroll-behavior: none;
 }
@@ -62,31 +72,66 @@ button {
 	background: none;
 }
 
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 3px;
+	border-radius: 8px;
+}
+
 /* ------------------------------------------------------------------ layers */
 
+/*
+ * `visibility` only flips at the END of its transition, so an outgoing layer
+ * stays hit-testable for the whole fade and swallows clicks aimed at whatever
+ * replaced it. `pointer-events` is not transitioned, so it switches instantly
+ * and keeps inactive layers inert.
+ */
 .layer {
 	position: fixed;
 	inset: 0;
 	opacity: 0;
 	visibility: hidden;
+	pointer-events: none;
 	transition:
-		opacity 0.28s var(--ease),
-		visibility 0.28s;
+		opacity 0.3s var(--ease),
+		visibility 0.3s;
 }
 
 .video {
 	width: 100%;
 	height: 100%;
 	object-fit: cover;
-	background: #0b0d10;
+	background: #0a0c0f;
 }
 
-/* The viewer letterboxes the still so the overlay can stay a pure % mapping. */
 .viewer {
 	display: grid;
 	place-items: center;
-	padding: 76px 12px calc(var(--dock-bottom) + 140px);
-	background: var(--bg);
+	padding: 74px 14px calc(var(--dock-bottom) + 136px);
+}
+
+/*
+ * A scaled, blurred copy of the photo fills the screen behind the framed
+ * original. It replaces flat grey letterboxing with colour drawn from the
+ * image itself, which is what makes the result feel composed rather than
+ * pasted onto a page.
+ */
+.ambient {
+	position: absolute;
+	inset: -8%;
+	background-position: center;
+	background-size: cover;
+	filter: blur(44px) saturate(150%) brightness(1.06);
+	opacity: 0.55;
+	transform: scale(1.08);
+	transition: opacity 0.5s var(--ease);
+}
+
+.ambient::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	background: linear-gradient(to bottom, rgb(244 246 248 / 42%), rgb(244 246 248 / 78%));
 }
 
 .frame {
@@ -94,11 +139,21 @@ button {
 	max-width: 100%;
 	max-height: 100%;
 	/* aspect-ratio is set from the OCR page dimensions at render time. */
-	border-radius: 18px;
+	border-radius: 20px;
 	overflow: hidden;
-	box-shadow: var(--shadow-lg);
-	background: #0b0d10;
+	box-shadow:
+		0 0 0 1px rgb(255 255 255 / 50%),
+		var(--shadow-lg);
+	background: #0a0c0f;
 	line-height: 0;
+	animation: frame-in 0.42s var(--spring) backwards;
+}
+
+@keyframes frame-in {
+	from {
+		opacity: 0;
+		transform: scale(0.975);
+	}
 }
 
 .frame img {
@@ -112,7 +167,7 @@ button {
 	position: absolute;
 	inset: 0;
 	line-height: normal;
-	transition: opacity 0.16s var(--ease);
+	transition: opacity 0.18s var(--ease);
 }
 
 .overlay.muted {
@@ -135,6 +190,85 @@ body[data-state="upload"] .dropzone,
 body[data-state="primer"] .primer {
 	opacity: 1;
 	visibility: visible;
+	pointer-events: auto;
+}
+
+/* ---------------------------------------------------------------- reticle */
+
+/* Corner brackets give the viewfinder a subject and a sense of precision. */
+.reticle {
+	position: fixed;
+	inset: 96px 34px calc(var(--dock-bottom) + 150px);
+	z-index: 8;
+	opacity: 0;
+	visibility: hidden;
+	transition:
+		opacity 0.4s var(--ease),
+		visibility 0.4s;
+	pointer-events: none;
+}
+
+body[data-state="camera"] .reticle {
+	opacity: 1;
+	visibility: visible;
+}
+
+.corner {
+	position: absolute;
+	width: 28px;
+	height: 28px;
+	border: 2.5px solid rgb(255 255 255 / 88%);
+	filter: drop-shadow(0 1px 3px rgb(0 0 0 / 35%));
+}
+
+.corner.tl {
+	top: 0;
+	left: 0;
+	border-right: none;
+	border-bottom: none;
+	border-radius: 12px 0 0 0;
+}
+
+.corner.tr {
+	top: 0;
+	right: 0;
+	border-left: none;
+	border-bottom: none;
+	border-radius: 0 12px 0 0;
+}
+
+.corner.bl {
+	bottom: 0;
+	left: 0;
+	border-right: none;
+	border-top: none;
+	border-radius: 0 0 0 12px;
+}
+
+.corner.br {
+	bottom: 0;
+	right: 0;
+	border-left: none;
+	border-top: none;
+	border-radius: 0 0 12px 0;
+}
+
+.reticle-hint {
+	position: absolute;
+	left: 50%;
+	bottom: -38px;
+	transform: translateX(-50%);
+	margin: 0;
+	padding: 7px 15px;
+	border-radius: 999px;
+	white-space: nowrap;
+	background: rgb(10 12 15 / 42%);
+	backdrop-filter: var(--blur-soft);
+	-webkit-backdrop-filter: var(--blur-soft);
+	color: rgb(255 255 255 / 92%);
+	font-size: 12.5px;
+	font-weight: 500;
+	letter-spacing: 0.1px;
 }
 
 /* ------------------------------------------------------------------ topbar */
@@ -157,46 +291,49 @@ body[data-state="primer"] .primer {
 	pointer-events: auto;
 }
 
-.brand {
+.brand,
+.pill {
 	display: flex;
 	align-items: center;
-	gap: 9px;
-	padding: 7px 14px 7px 8px;
 	border-radius: 999px;
-	background: var(--surface);
+	background: var(--glass);
 	backdrop-filter: var(--blur);
 	-webkit-backdrop-filter: var(--blur);
-	border: 1px solid var(--border);
-	box-shadow: var(--shadow-sm);
+	box-shadow:
+		inset 0 1px 0 var(--hairline),
+		0 0 0 1px var(--border),
+		var(--shadow-sm);
+}
+
+.brand {
+	gap: 9px;
+	padding: 6px 15px 6px 6px;
 }
 
 /* The glyph, colour and circle all live in /icon.svg — see index.html. */
 .brand-mark {
 	display: block;
-	width: 25px;
-	height: 25px;
+	width: 26px;
+	height: 26px;
 	flex: none;
 }
 
 .brand-name {
 	font-size: 14.5px;
 	font-weight: 600;
-	letter-spacing: -0.1px;
+	letter-spacing: -0.2px;
 }
 
 .pill {
 	position: relative;
-	display: flex;
-	align-items: center;
 	gap: 5px;
-	padding: 8px 10px 8px 14px;
-	border-radius: 999px;
-	background: var(--surface);
-	backdrop-filter: var(--blur);
-	-webkit-backdrop-filter: var(--blur);
-	border: 1px solid var(--border);
-	box-shadow: var(--shadow-sm);
+	padding: 8px 11px 8px 14px;
 	cursor: pointer;
+	transition: background 0.18s var(--ease);
+}
+
+.pill:hover {
+	background: var(--glass-strong);
 }
 
 .pill-caption {
@@ -210,16 +347,11 @@ body[data-state="primer"] .primer {
 	background: none;
 	font-size: 14.5px;
 	font-weight: 600;
+	letter-spacing: -0.2px;
 	padding-right: 2px;
 	cursor: pointer;
 	max-width: 33vw;
 	text-overflow: ellipsis;
-}
-
-.pill select:focus-visible {
-	outline: 2px solid var(--accent);
-	outline-offset: 4px;
-	border-radius: 6px;
 }
 
 .pill-chevron {
@@ -227,8 +359,32 @@ body[data-state="primer"] .primer {
 	flex: none;
 }
 
+/* Over the camera feed the chrome flips to dark glass so it stays readable. */
+body[data-state="camera"] .brand,
+body[data-state="camera"] .pill {
+	background: rgb(10 12 15 / 34%);
+	color: #fff;
+	box-shadow:
+		inset 0 1px 0 rgb(255 255 255 / 16%),
+		0 0 0 1px rgb(255 255 255 / 12%);
+}
+
+body[data-state="camera"] .pill-caption,
+body[data-state="camera"] .pill-chevron {
+	color: rgb(255 255 255 / 70%);
+}
+
+body[data-state="camera"] .pill select {
+	color: #fff;
+}
+
+body[data-state="camera"] .pill select option {
+	color: var(--text);
+}
+
 /* ------------------------------------------------------------------- docks */
 
+/* Same inert-while-fading rule as .layer above. */
 .dock {
 	position: fixed;
 	left: 0;
@@ -237,29 +393,29 @@ body[data-state="primer"] .primer {
 	z-index: 25;
 	opacity: 0;
 	visibility: hidden;
-	transform: translateY(14px);
+	pointer-events: none;
+	transform: translateY(16px);
 	transition:
-		opacity 0.26s var(--ease),
-		transform 0.26s var(--ease),
-		visibility 0.26s;
+		opacity 0.28s var(--ease),
+		transform 0.34s var(--spring),
+		visibility 0.34s;
 }
 
 body[data-state="camera"] .camerabar,
 body[data-state="result"] .sheet {
 	opacity: 1;
 	visibility: visible;
+	pointer-events: auto;
 	transform: none;
 }
-
-/* camera bar */
 
 .camerabar {
 	display: flex;
 	align-items: center;
 	justify-content: center;
-	gap: 34px;
-	padding: 20px 20px var(--dock-bottom);
-	background: linear-gradient(to top, rgb(8 11 15 / 42%), transparent);
+	gap: 36px;
+	padding: 24px 20px var(--dock-bottom);
+	background: linear-gradient(to top, rgb(8 11 15 / 52%), rgb(8 11 15 / 12%) 62%, transparent);
 }
 
 .round {
@@ -272,63 +428,87 @@ body[data-state="result"] .sheet {
 }
 
 .round:active {
-	transform: scale(0.92);
+	transform: scale(0.9);
 }
 
 .round-ghost {
 	color: #fff;
-	background: rgb(255 255 255 / 16%);
-	backdrop-filter: blur(10px);
-	-webkit-backdrop-filter: blur(10px);
-	border: 1px solid rgb(255 255 255 / 26%);
+	background: rgb(255 255 255 / 14%);
+	backdrop-filter: var(--blur-soft);
+	-webkit-backdrop-filter: var(--blur-soft);
+	box-shadow: inset 0 0 0 1px rgb(255 255 255 / 26%);
 }
 
 .shutter {
-	width: 72px;
-	height: 72px;
+	position: relative;
+	width: 74px;
+	height: 74px;
 	border-radius: 50%;
-	background: rgb(255 255 255 / 26%);
-	border: 2.5px solid #fff;
 	display: grid;
 	place-items: center;
-	backdrop-filter: blur(10px);
-	-webkit-backdrop-filter: blur(10px);
-	transition: transform 0.14s var(--ease);
+	background: rgb(255 255 255 / 18%);
+	backdrop-filter: var(--blur-soft);
+	-webkit-backdrop-filter: var(--blur-soft);
+	box-shadow: inset 0 0 0 2.5px rgb(255 255 255 / 92%);
+	transition: transform 0.16s var(--spring);
 }
 
 .shutter span {
-	width: 56px;
-	height: 56px;
+	width: 58px;
+	height: 58px;
 	border-radius: 50%;
 	background: #fff;
-	transition: transform 0.14s var(--ease);
+	box-shadow: 0 2px 10px rgb(0 0 0 / 18%);
+	transition: transform 0.16s var(--spring);
 }
 
 .shutter:active span {
-	transform: scale(0.88);
+	transform: scale(0.86);
+}
+
+/* Ring that expands away from the button on press. */
+.shutter::after {
+	content: "";
+	position: absolute;
+	inset: -6px;
+	border-radius: 50%;
+	border: 2px solid rgb(255 255 255 / 70%);
+	opacity: 0;
+	transform: scale(0.85);
+	transition:
+		opacity 0.45s var(--ease),
+		transform 0.45s var(--ease);
+}
+
+.shutter:active::after {
+	opacity: 1;
+	transform: scale(1.12);
+	transition-duration: 0.12s;
 }
 
 .shutter:disabled {
-	opacity: 0.5;
+	opacity: 0.55;
 }
 
 /* result sheet */
 
 .sheet {
-	padding: 8px 16px var(--dock-bottom);
-	background: var(--surface);
+	padding: 9px 16px var(--dock-bottom);
+	background: var(--glass);
 	backdrop-filter: var(--blur);
 	-webkit-backdrop-filter: var(--blur);
-	border-top: 1px solid var(--border);
-	border-radius: 20px 20px 0 0;
-	box-shadow: 0 -8px 34px rgb(15 23 42 / 12%);
+	border-radius: 22px 22px 0 0;
+	box-shadow:
+		inset 0 1px 0 var(--hairline),
+		0 -1px 0 var(--border),
+		0 -10px 40px rgb(15 23 42 / 10%);
 }
 
 .sheet-grip {
-	width: 38px;
+	width: 36px;
 	height: 4px;
 	border-radius: 99px;
-	background: rgb(15 23 42 / 16%);
+	background: rgb(15 23 42 / 15%);
 	margin: 0 auto 12px;
 }
 
@@ -337,20 +517,21 @@ body[data-state="result"] .sheet {
 	align-items: center;
 	justify-content: space-between;
 	gap: 14px;
-	margin-bottom: 12px;
+	margin-bottom: 13px;
 }
 
 .sheet-title {
 	margin: 0;
-	font-size: 15.5px;
+	font-size: 16px;
 	font-weight: 650;
-	letter-spacing: -0.15px;
+	letter-spacing: -0.35px;
 }
 
 .sheet-sub {
 	margin: 2px 0 0;
 	font-size: 12.5px;
 	color: var(--muted);
+	letter-spacing: -0.05px;
 }
 
 .sheet-actions {
@@ -365,33 +546,41 @@ body[data-state="result"] .sheet {
 	padding: 11px 20px;
 	font-size: 14.5px;
 	font-weight: 600;
+	letter-spacing: -0.2px;
 	transition:
-		transform 0.14s var(--ease),
-		filter 0.14s var(--ease);
+		transform 0.14s var(--spring),
+		filter 0.14s var(--ease),
+		background 0.14s var(--ease);
 }
 
 .btn:active {
-	transform: scale(0.97);
+	transform: scale(0.96);
 }
 
 .btn-sm {
-	padding: 9px 16px;
+	padding: 9px 17px;
 	font-size: 13.5px;
 }
 
 .btn-primary {
 	background: var(--accent);
 	color: #fff;
-	box-shadow: 0 2px 10px rgb(26 115 232 / 32%);
+	box-shadow:
+		inset 0 1px 0 rgb(255 255 255 / 22%),
+		0 2px 12px rgb(26 115 232 / 34%);
 }
 
 .btn-primary:hover {
-	filter: brightness(1.06);
+	filter: brightness(1.07);
 }
 
 .btn-quiet {
-	background: rgb(15 23 42 / 5%);
+	background: rgb(15 23 42 / 6%);
 	color: var(--text);
+}
+
+.btn-quiet:hover {
+	background: rgb(15 23 42 / 10%);
 }
 
 .chip {
@@ -401,21 +590,30 @@ body[data-state="result"] .sheet {
 	justify-content: center;
 	gap: 7px;
 	padding: 11px 12px;
-	border-radius: 13px;
-	background: rgb(15 23 42 / 5%);
+	border-radius: 14px;
+	background: rgb(255 255 255 / 55%);
+	box-shadow: inset 0 0 0 1px var(--border);
 	font-size: 13.5px;
 	font-weight: 550;
-	transition: background 0.14s var(--ease);
+	letter-spacing: -0.15px;
 	user-select: none;
+	transition:
+		background 0.14s var(--ease),
+		transform 0.14s var(--spring);
 }
 
 .chip:hover {
-	background: rgb(15 23 42 / 9%);
+	background: rgb(255 255 255 / 85%);
+}
+
+.chip:active {
+	transform: scale(0.975);
 }
 
 .chip[aria-pressed="false"] {
-	background: rgb(26 115 232 / 12%);
+	background: rgb(26 115 232 / 13%);
 	color: var(--accent);
+	box-shadow: inset 0 0 0 1px rgb(26 115 232 / 22%);
 }
 
 /* ---------------------------------------------------------------- dropzone */
@@ -423,34 +621,43 @@ body[data-state="result"] .sheet {
 .dropcard {
 	width: min(430px, 100%);
 	padding: 40px 30px 32px;
-	border-radius: 22px;
-	background: var(--surface-solid);
-	border: 1px solid var(--border);
-	box-shadow: var(--shadow-lg);
+	border-radius: 24px;
+	background: var(--glass-strong);
+	backdrop-filter: var(--blur);
+	-webkit-backdrop-filter: var(--blur);
+	box-shadow:
+		inset 0 1px 0 var(--hairline),
+		0 0 0 1px var(--border),
+		var(--shadow-lg);
 	text-align: center;
+	animation: frame-in 0.4s var(--spring) backwards;
 }
 
 .dropzone.dragging .dropcard {
-	border-color: var(--accent);
-	box-shadow: 0 0 0 4px rgb(26 115 232 / 14%), var(--shadow-lg);
+	box-shadow:
+		inset 0 1px 0 var(--hairline),
+		0 0 0 2px var(--accent),
+		0 0 0 8px rgb(26 115 232 / 12%),
+		var(--shadow-lg);
 }
 
 .dropicon {
 	display: grid;
 	place-items: center;
-	width: 58px;
-	height: 58px;
-	margin: 0 auto 16px;
+	width: 60px;
+	height: 60px;
+	margin: 0 auto 17px;
 	border-radius: 50%;
 	background: rgb(26 115 232 / 10%);
+	box-shadow: inset 0 0 0 1px rgb(26 115 232 / 14%);
 	color: var(--accent);
 }
 
 .dropcard h2 {
-	margin: 0 0 7px;
-	font-size: 20px;
+	margin: 0 0 8px;
+	font-size: 21px;
 	font-weight: 650;
-	letter-spacing: -0.3px;
+	letter-spacing: -0.45px;
 }
 
 .dropcard p {
@@ -472,25 +679,34 @@ body[data-state="result"] .sheet {
 /*
  * A region is positioned in percentages of the frame, so it tracks the artwork
  * at any size. Background colour is sampled from the photo at runtime and set
- * inline, which is what keeps the chips from looking pasted on.
+ * inline. Deliberately opaque: it must cover the source text underneath.
  */
 .region {
 	position: absolute;
 	display: flex;
 	align-items: center;
-	border-radius: 4px;
+	border-radius: 5px;
 	padding: 0 3px;
 	overflow: hidden;
 	cursor: pointer;
 	font-family: system-ui, -apple-system, sans-serif;
 	line-height: 1.14;
-	letter-spacing: -0.15px;
-	animation: region-in 0.3s var(--ease) backwards;
-	transition: box-shadow 0.15s var(--ease);
+	letter-spacing: -0.2px;
+	box-shadow:
+		inset 0 1px 0 rgb(255 255 255 / 18%),
+		0 1px 3px rgb(0 0 0 / 7%);
+	animation: region-in 0.34s var(--spring) backwards;
+	transition:
+		box-shadow 0.16s var(--ease),
+		transform 0.16s var(--spring);
 }
 
 .region:hover {
-	box-shadow: 0 0 0 2px rgb(26 115 232 / 55%);
+	box-shadow:
+		0 0 0 2px var(--accent),
+		0 3px 12px rgb(26 115 232 / 26%);
+	transform: scale(1.015);
+	z-index: 2;
 }
 
 .region.is-title {
@@ -498,7 +714,9 @@ body[data-state="result"] .sheet {
 }
 
 .region.is-low {
-	box-shadow: inset 0 -2px 0 rgb(197 53 27 / 45%);
+	box-shadow:
+		inset 0 1px 0 rgb(255 255 255 / 18%),
+		inset 0 -2px 0 rgb(197 53 27 / 45%);
 }
 
 /*
@@ -511,9 +729,9 @@ body[data-state="result"] .sheet {
 	position: absolute;
 	right: 0;
 	bottom: 0;
-	width: 16px;
+	width: 18px;
 	height: 100%;
-	background: linear-gradient(to right, transparent, rgb(0 0 0 / 22%));
+	background: linear-gradient(to right, transparent, rgb(0 0 0 / 24%));
 	pointer-events: none;
 }
 
@@ -525,7 +743,7 @@ body[data-state="result"] .sheet {
 @keyframes region-in {
 	from {
 		opacity: 0;
-		transform: translateY(3px);
+		transform: translateY(4px) scale(0.985);
 	}
 }
 
@@ -543,16 +761,16 @@ body[data-state="result"] .sheet {
 	position: absolute;
 	left: 0;
 	right: 0;
-	height: 38%;
+	height: 40%;
 	background: linear-gradient(
 		to bottom,
 		transparent,
-		rgb(26 115 232 / 16%) 45%,
-		rgb(26 115 232 / 40%) 50%,
-		rgb(26 115 232 / 16%) 55%,
+		rgb(26 115 232 / 14%) 45%,
+		rgb(26 115 232 / 42%) 50%,
+		rgb(26 115 232 / 14%) 55%,
 		transparent
 	);
-	animation: sweep 1.25s var(--ease) infinite;
+	animation: sweep 1.3s var(--ease) infinite;
 }
 
 @keyframes sweep {
@@ -568,7 +786,7 @@ body[data-state="result"] .sheet {
 
 .toast {
 	position: fixed;
-	top: calc(max(12px, env(safe-area-inset-top)) + 54px);
+	top: calc(max(12px, env(safe-area-inset-top)) + 56px);
 	left: 50%;
 	transform: translateX(-50%);
 	z-index: 40;
@@ -576,33 +794,40 @@ body[data-state="result"] .sheet {
 	align-items: center;
 	gap: 9px;
 	max-width: min(440px, calc(100% - 28px));
-	padding: 10px 16px;
+	padding: 10px 17px;
 	border-radius: 999px;
-	background: var(--surface);
+	background: var(--glass-strong);
 	backdrop-filter: var(--blur);
 	-webkit-backdrop-filter: var(--blur);
-	border: 1px solid var(--border);
-	box-shadow: var(--shadow-sm);
+	box-shadow:
+		inset 0 1px 0 var(--hairline),
+		0 0 0 1px var(--border),
+		var(--shadow-md);
 	font-size: 13.5px;
-	animation: toast-in 0.22s var(--ease);
+	font-weight: 500;
+	letter-spacing: -0.15px;
+	animation: toast-in 0.26s var(--spring);
 }
 
 .toast.is-error {
 	color: var(--danger);
-	border-color: rgb(197 53 27 / 26%);
+	box-shadow:
+		inset 0 1px 0 var(--hairline),
+		0 0 0 1px rgb(197 53 27 / 24%),
+		var(--shadow-md);
 }
 
 @keyframes toast-in {
 	from {
 		opacity: 0;
-		transform: translate(-50%, -7px);
+		transform: translate(-50%, -9px) scale(0.97);
 	}
 }
 
 .spinner {
 	width: 14px;
 	height: 14px;
-	border: 2px solid rgb(15 23 42 / 14%);
+	border: 2px solid rgb(15 23 42 / 13%);
 	border-top-color: var(--accent);
 	border-radius: 50%;
 	animation: spin 0.7s linear infinite;
@@ -621,17 +846,19 @@ body[data-state="result"] .sheet {
 	position: fixed;
 	left: 50%;
 	transform: translateX(-50%);
-	bottom: calc(var(--dock-bottom) + 150px);
+	bottom: calc(var(--dock-bottom) + 148px);
 	z-index: 35;
 	width: min(480px, calc(100% - 28px));
-	padding: 12px 15px 14px;
-	border-radius: 16px;
-	background: var(--surface);
+	padding: 13px 16px 15px;
+	border-radius: 18px;
+	background: var(--glass-strong);
 	backdrop-filter: var(--blur);
 	-webkit-backdrop-filter: var(--blur);
-	border: 1px solid var(--border);
-	box-shadow: var(--shadow-lg);
-	animation: toast-in 0.2s var(--ease);
+	box-shadow:
+		inset 0 1px 0 var(--hairline),
+		0 0 0 1px var(--border),
+		var(--shadow-lg);
+	animation: toast-in 0.24s var(--spring);
 }
 
 .peek-row {
@@ -651,21 +878,23 @@ body[data-state="result"] .sheet {
 .peek-close {
 	display: grid;
 	place-items: center;
-	width: 24px;
-	height: 24px;
-	margin-right: -4px;
+	width: 25px;
+	height: 25px;
+	margin-right: -5px;
 	border-radius: 50%;
 	color: var(--muted);
+	transition: background 0.14s var(--ease);
 }
 
 .peek-close:hover {
-	background: rgb(15 23 42 / 7%);
+	background: rgb(15 23 42 / 8%);
 }
 
 .peek p {
 	margin: 5px 0 0;
 	font-size: 15px;
 	line-height: 1.42;
+	letter-spacing: -0.2px;
 }
 
 #peek-translation {
@@ -676,8 +905,8 @@ body[data-state="result"] .sheet {
 	display: flex;
 	align-items: baseline;
 	gap: 8px;
-	margin-top: 9px !important;
-	padding-top: 9px;
+	margin-top: 10px !important;
+	padding-top: 10px;
 	border-top: 1px solid var(--border);
 	color: var(--muted);
 	font-size: 14px !important;
@@ -696,28 +925,31 @@ body[data-state="result"] .sheet {
  */
 @media (max-height: 720px) {
 	.viewer {
-		padding: 62px 8px calc(var(--dock-bottom) + 112px);
+		padding: 60px 8px calc(var(--dock-bottom) + 110px);
 	}
 
 	.peek {
-		bottom: calc(var(--dock-bottom) + 124px);
+		bottom: calc(var(--dock-bottom) + 122px);
+	}
+
+	.reticle {
+		inset: 80px 26px calc(var(--dock-bottom) + 132px);
 	}
 }
 
-/* Desktop: the viewer gets breathing room and the sheet becomes a panel. */
+/* Desktop: more room for the photo, and the sheet becomes a floating panel. */
 @media (min-width: 760px) {
 	.viewer {
-		padding: 84px 28px 116px;
+		padding: 80px 28px 122px;
 	}
 
 	.sheet {
 		left: 50%;
 		right: auto;
 		bottom: 22px;
-		transform: translateX(-50%) translateY(14px);
+		transform: translateX(-50%) translateY(16px);
 		width: min(580px, calc(100% - 44px));
-		border-radius: 20px;
-		border: 1px solid var(--border);
+		border-radius: 22px;
 	}
 
 	body[data-state="result"] .sheet {
@@ -725,30 +957,22 @@ body[data-state="result"] .sheet {
 	}
 
 	.peek {
-		bottom: 150px;
+		bottom: 156px;
+	}
+
+	.reticle {
+		inset: 110px 12% calc(var(--dock-bottom) + 160px);
 	}
 
 	.camerabar {
-		background: none;
-	}
-
-	.camerabar .round-ghost {
-		color: var(--text);
-		background: var(--surface);
-		border-color: var(--border);
-		box-shadow: var(--shadow-sm);
-	}
-
-	.shutter {
-		background: var(--surface);
-		border-color: #fff;
-		box-shadow: var(--shadow-lg);
+		background: linear-gradient(to top, rgb(8 11 15 / 34%), transparent);
 	}
 }
 
 @media (prefers-reduced-motion: reduce) {
 	*,
-	*::after {
+	*::after,
+	*::before {
 		animation-duration: 0.01ms !important;
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.01ms !important;

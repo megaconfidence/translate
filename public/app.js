@@ -22,7 +22,7 @@ const STORAGE_KEY = "translate.target";
 const el = {};
 for (const id of [
 	"video", "viewer", "frame", "photo", "overlay", "scanner", "dropzone",
-	"primer", "allow-camera", "primer-pick",
+	"ambient", "primer", "allow-camera", "primer-pick",
 	"dropnote", "choose", "enable-camera", "target", "toast", "camerabar",
 	"pick", "shutter", "flip", "sheet", "sheet-title", "sheet-sub", "retake",
 	"toggle", "toggle-label", "download", "peek", "peek-text", "peek-close",
@@ -240,6 +240,8 @@ async function accept(sourceBitmap) {
 
 	current = { bitmap, dataUrl, result: null, colors: [] };
 	el.photo.src = dataUrl;
+	// Same photo, blurred behind the frame, so letterboxing picks up its colour.
+	el.ambient.style.backgroundImage = `url("${dataUrl}")`;
 	el.frame.style.aspectRatio = `${bitmap.width} / ${bitmap.height}`;
 	el.overlay.replaceChildren();
 	setState("captured");
@@ -510,6 +512,7 @@ function reset() {
 	current = { bitmap: null, dataUrl: null, result: null, colors: [] };
 	el.overlay.replaceChildren();
 	el.photo.removeAttribute("src");
+	el.ambient.style.backgroundImage = "";
 	el.peek.hidden = true;
 	el.scanner.hidden = true;
 	hideToast();

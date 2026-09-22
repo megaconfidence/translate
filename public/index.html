@@ -18,8 +18,17 @@
 		<!-- Live camera. Sits at the back; everything else floats over it. -->
 		<video id="video" class="layer video" playsinline muted autoplay></video>
 
+		<!-- Viewfinder framing guides. -->
+		<div id="reticle" class="reticle" aria-hidden="true">
+			<span class="corner tl"></span><span class="corner tr"></span>
+			<span class="corner bl"></span><span class="corner br"></span>
+			<p class="reticle-hint">Point at a menu or sign</p>
+		</div>
+
 		<!-- Captured still + translation overlay. -->
 		<div id="viewer" class="layer viewer">
+			<!-- Blurred copy of the photo, so the page never shows dead grey. -->
+			<div id="ambient" class="ambient" aria-hidden="true"></div>
 			<div id="frame" class="frame">
 				<img id="photo" alt="Captured photo" />
 				<div id="overlay" class="overlay"></div>
