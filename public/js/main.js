@@ -30,6 +30,7 @@ import * as install from "./install.js";
 
 const TARGET_KEY = "translate.target";
 const SAVED_TOAST_MS = 1600;
+const SAMPLE_URLS = ["/samples/sign.webp", "/samples/menu.jpeg", "/samples/map.jpg"];
 
 /** The photo on screen and what came back for it. */
 let current = { bitmap: null, dataUrl: null, result: null };
@@ -101,6 +102,30 @@ for (const button of [el.pick, el.choose, el.primerPick]) {
 	button.addEventListener("click", () => el.file.click());
 }
 
+let lastSampleUrl = null;
+
+/** A random bundled photo, never the same one twice in a row. */
+function pickSample() {
+	const choices = SAMPLE_URLS.filter((url) => url !== lastSampleUrl);
+	lastSampleUrl = choices[Math.floor(Math.random() * choices.length)];
+	return lastSampleUrl;
+}
+
+/** Runs a bundled photo through the same pipeline as a picked file. */
+async function loadSample() {
+	try {
+		const response = await fetch(pickSample());
+		if (!response.ok) throw new Error(`request failed (${response.status})`);
+		await accept(await bitmapFromFile(await response.blob()));
+	} catch (error) {
+		toastError(`Could not load the sample: ${error.message}`);
+	}
+}
+
+for (const button of [el.sample, el.primerSample]) {
+	button.addEventListener("click", loadSample);
+}
+
 el.file.addEventListener("change", async (event) => {
 	const file = event.target.files?.[0];
 	event.target.value = "";
@@ -147,7 +172,7 @@ async function translate(dataUrl) {
 	if (navigator.onLine === false) {
 		failResult(
 			"You're offline",
-			"Translating needs a connection. The app still opens offline.",
+			"Translating needs a connection.",
 			"No connection",
 		);
 		return;
@@ -233,14 +258,20 @@ el.retake.addEventListener("click", () => {
 
 /* --------------------------------------------------------------------- boot */
 
-// Shell caching only; the worker explicitly never caches /api/*.
-if ("serviceWorker" in navigator) {
-	window.addEventListener("load", () => {
-		navigator.serviceWorker.register("/sw.js").catch((error) => {
-			console.warn("service worker registration failed", error);
-		});
-	});
-}
+/*
+ * Earlier versions registered a service worker that cached the app shell.
+ * Browsers keep a registered worker until it is explicitly removed, so clear
+ * out any left behind, along with its caches. Safe to delete once old installs
+ * have cycled through.
+ */
+navigator.serviceWorker
+	?.getRegistrations()
+	.then((registrations) => registrations.forEach((registration) => registration.unregister()))
+	.catch(() => {});
+globalThis.caches
+	?.keys()
+	.then((keys) => keys.filter((key) => key.startsWith("translate-shell-")).forEach((key) => caches.delete(key)))
+	.catch(() => {});
 
 await loadLanguages();
 if (prefersCamera) await bootCamera();

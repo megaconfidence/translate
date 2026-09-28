@@ -42,7 +42,7 @@ src/
 public/
   index.html    all screens as stacked layers
   styles.css    body[data-state] decides which layer and dock are visible
-  sw.js         caches the app shell; never caches /api
+  samples/      photos for "Try a sample"; one is picked at random
   js/
     main.js     session state, wiring, boot  (entry point)
     camera.js   permission primer, live stream, capture
@@ -100,13 +100,6 @@ touching code:
 | `TRANSLATE_MODEL` | `mistral-small-latest` | Any chat model that honours `json_schema`. Reasoning models work but are slower for no quality gain here. |
 
 ## Things that will bite you
-
-**Every module must be listed in `SHELL` in `sw.js`.** Miss one and an offline
-launch stalls on a failed import — the page loads and the app never starts. Bump
-`CACHE` whenever a shell file changes; `activate` deletes the older caches.
-
-**The service worker serves stale JavaScript during development.** Hard-reload,
-or enable DevTools → Application → *Update on reload*.
 
 **The camera and PWA install both require a secure context.** `localhost` works.
 A LAN IP over plain `http` does not, which is baffling unless you know — the app
