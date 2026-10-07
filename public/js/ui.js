@@ -10,7 +10,7 @@
 const IDS = [
 	"video", "frame", "photo", "overlay", "scanner", "ambient",
 	"dropzone", "dropnote", "choose", "enable-camera",
-	"allow-camera", "primer-pick", "sample", "primer-sample",
+	"allow-camera", "primer-pick", "deck", "primer-deck",
 	"target", "toast",
 	"pick", "shutter", "flip",
 	"sheet-title", "sheet-sub", "retake",

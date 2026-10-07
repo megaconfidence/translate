@@ -42,7 +42,7 @@ src/
 public/
   index.html    all screens as stacked layers
   styles.css    body[data-state] decides which layer and dock are visible
-  samples/      photos for "Try a sample"; one is picked at random
+  samples/      sample photos shown as the first-run deck
   js/
     main.js     session state, wiring, boot  (entry point)
     camera.js   permission primer, live stream, capture

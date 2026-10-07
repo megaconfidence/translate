@@ -30,7 +30,12 @@ import * as install from "./install.js";
 
 const TARGET_KEY = "translate.target";
 const SAVED_TOAST_MS = 1600;
-const SAMPLE_URLS = ["/samples/sign.webp", "/samples/menu.jpeg", "/samples/map.jpg"];
+/** Rendered left to right; the middle one sits on top of the deck. */
+const SAMPLES = [
+	{ label: "Sign", src: "/samples/sign.jpg" },
+	{ label: "Menu", src: "/samples/menu.jpg" },
+	{ label: "Map", src: "/samples/map.jpg" },
+];
 
 /** The photo on screen and what came back for it. */
 let current = { bitmap: null, dataUrl: null, result: null };
@@ -102,19 +107,10 @@ for (const button of [el.pick, el.choose, el.primerPick]) {
 	button.addEventListener("click", () => el.file.click());
 }
 
-let lastSampleUrl = null;
-
-/** A random bundled photo, never the same one twice in a row. */
-function pickSample() {
-	const choices = SAMPLE_URLS.filter((url) => url !== lastSampleUrl);
-	lastSampleUrl = choices[Math.floor(Math.random() * choices.length)];
-	return lastSampleUrl;
-}
-
 /** Runs a bundled photo through the same pipeline as a picked file. */
-async function loadSample() {
+async function loadSample(src) {
 	try {
-		const response = await fetch(pickSample());
+		const response = await fetch(src);
 		if (!response.ok) throw new Error(`request failed (${response.status})`);
 		await accept(await bitmapFromFile(await response.blob()));
 	} catch (error) {
@@ -122,9 +118,34 @@ async function loadSample() {
 	}
 }
 
-for (const button of [el.sample, el.primerSample]) {
-	button.addEventListener("click", loadSample);
+/** Fans the samples out as cards; `--i` is each card's offset from the centre. */
+function renderDeck(container) {
+	const middle = (SAMPLES.length - 1) / 2;
+	container.replaceChildren(
+		...SAMPLES.map(({ label, src }, index) => {
+			const card = document.createElement("button");
+			card.className = "deck-card";
+			card.style.setProperty("--i", String(index - middle));
+			card.setAttribute("aria-label", `Try the ${label.toLowerCase()} sample`);
+
+			const image = document.createElement("img");
+			image.src = src;
+			image.alt = "";
+			image.decoding = "async";
+			image.draggable = false;
+
+			const caption = document.createElement("span");
+			caption.className = "deck-label";
+			caption.textContent = label;
+
+			card.append(image, caption);
+			card.addEventListener("click", () => loadSample(src));
+			return card;
+		}),
+	);
 }
+
+for (const container of [el.deck, el.primerDeck]) renderDeck(container);
 
 el.file.addEventListener("change", async (event) => {
 	const file = event.target.files?.[0];
