@@ -163,6 +163,8 @@ for (const type of ["dragenter", "dragover"]) {
 for (const type of ["dragleave", "drop"]) {
 	el.dropzone.addEventListener(type, (event) => {
 		event.preventDefault();
+		// dragleave also fires when crossing between the card's own children.
+		if (type === "dragleave" && el.dropzone.contains(event.relatedTarget)) return;
 		el.dropzone.classList.remove("dragging");
 	});
 }
@@ -172,6 +174,19 @@ el.dropzone.addEventListener("drop", (event) => {
 });
 
 /* ------------------------------------------------------------------ request */
+
+const displayNames = typeof Intl.DisplayNames === "function" ? new Intl.DisplayNames(["en"], { type: "language" }) : null;
+
+/** "German" for "de": the picker's own label where there is one, else Intl's. */
+function languageName(code) {
+	const option = [...el.target.options].find((candidate) => candidate.value === code);
+	if (option) return option.textContent;
+	try {
+		return displayNames?.of(code) ?? code.toUpperCase();
+	} catch {
+		return code.toUpperCase();
+	}
+}
 
 /** Ends the request in the result state with an explanation. */
 function failResult(title, sub, toast = sub) {
@@ -219,10 +234,14 @@ async function translate(dataUrl) {
 		// Value delivered: the install offer is now earned, but not yet shown.
 		install.markEarned();
 
+		const count = result.regions.length;
 		const missing = result.regions.filter((region) => !region.translatedOk).length;
+		const target = languageName(result.targetLanguage);
 		setSheet(
-			`${result.detectedLanguage.toUpperCase()} → ${el.target.value.toUpperCase()}`,
-			`${result.regions.length} regions · ${result.timings.totalMs} ms` +
+			result.detectedLanguage === "unknown"
+				? `Translated to ${target}`
+				: `${languageName(result.detectedLanguage)} → ${target}`,
+			`${count} ${count === 1 ? "region" : "regions"} · ${(result.timings.totalMs / 1000).toFixed(1)} s` +
 				(missing ? ` · ${missing} untranslated` : ""),
 		);
 	} catch (error) {

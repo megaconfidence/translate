@@ -113,7 +113,7 @@ export function render(result, bitmap, onRegionTap) {
 		const span = document.createElement("span");
 		span.textContent = region.translated;
 		node.append(span);
-		node.addEventListener("click", () => onRegionTap(region));
+		node.addEventListener("click", () => onRegionTap(region, node));
 		return node;
 	});
 
@@ -124,6 +124,8 @@ export function render(result, bitmap, onRegionTap) {
 export function clear() {
 	rendered = null;
 	el.overlay.replaceChildren();
+	// A peek describes a chip that no longer exists, e.g. after a language change.
+	hidePeek();
 }
 
 const overflows = (node) =>
@@ -198,18 +200,25 @@ export function compose(bitmap) {
 
 const PEEK_TIMEOUT_MS = 6000;
 let peekTimer = null;
+/** The chip the peek is describing, highlighted so the two read as a pair. */
+let peekedNode = null;
 
 /** Full text for a region, so a clipped box is never a dead end. */
-export function showPeek(region) {
+export function showPeek(region, node = null) {
 	el.peekTranslation.textContent = region.translated;
 	el.peekText.textContent = region.source;
 	el.peek.hidden = false;
+	peekedNode?.classList.remove("is-peeked");
+	peekedNode = node;
+	peekedNode?.classList.add("is-peeked");
 	clearTimeout(peekTimer);
 	peekTimer = setTimeout(hidePeek, PEEK_TIMEOUT_MS);
 }
 
 export function hidePeek() {
 	el.peek.hidden = true;
+	peekedNode?.classList.remove("is-peeked");
+	peekedNode = null;
 }
 
 el.peekClose.addEventListener("click", hidePeek);

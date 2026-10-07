@@ -176,11 +176,18 @@ button {
 	opacity: 0;
 }
 
+/*
+ * The first-run cards are taller than a landscape phone, so these layers
+ * scroll. The card centres itself with auto margins rather than place-items:
+ * auto margins collapse to zero on overflow, where place-items would push the
+ * top of the card out of reach.
+ */
 .dropzone,
 .primer {
 	display: grid;
-	place-items: center;
-	padding: 24px;
+	padding: 60px 24px 24px;
+	overflow-y: auto;
+	overscroll-behavior: contain;
 	background: var(--bg);
 }
 
@@ -622,6 +629,7 @@ body[data-state="result"] .sheet {
 
 .dropcard {
 	width: min(430px, 100%);
+	margin: auto;
 	padding: 40px 30px 32px;
 	border-radius: 24px;
 	background: var(--glass-strong);
@@ -830,12 +838,24 @@ body[data-state="result"] .sheet {
 		transform 0.16s var(--spring);
 }
 
-.region:hover {
+/* The line the peek card is currently showing. */
+.region.is-peeked {
 	box-shadow:
 		0 0 0 2px var(--accent),
 		0 3px 12px rgb(26 115 232 / 26%);
 	transform: scale(1.015);
 	z-index: 2;
+}
+
+/* Pointer-only: on touch, :hover sticks to the last tapped line indefinitely. */
+@media (hover: hover) {
+	.region:hover {
+		box-shadow:
+			0 0 0 2px var(--accent),
+			0 3px 12px rgb(26 115 232 / 26%);
+		transform: scale(1.015);
+		z-index: 2;
+	}
 }
 
 .region.is-title {
@@ -1171,8 +1191,9 @@ body[data-state="result"] .sheet {
 
 /* Desktop: more room for the photo, and the sheet becomes a floating panel. */
 @media (min-width: 760px) {
+	/* Bottom padding clears the floating sheet (22px offset + ~130px tall). */
 	.viewer {
-		padding: 80px 28px 122px;
+		padding: 80px 28px 168px;
 	}
 
 	.sheet {
@@ -1189,7 +1210,7 @@ body[data-state="result"] .sheet {
 	}
 
 	.peek {
-		bottom: 156px;
+		bottom: 166px;
 	}
 
 	.reticle {
