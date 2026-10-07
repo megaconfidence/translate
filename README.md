@@ -1,131 +1,79 @@
 # Translate
 
-Point your camera at a menu or sign and read it in your language. The
-translation is drawn over the photo, in place.
+Point your phone at a menu or sign and read it in your own language. The translation is drawn straight onto the photo, where the original text was.
 
-A Cloudflare Worker serving a static frontend, with Mistral Document AI for OCR
-and a Mistral chat model for translation.
+<p align="center">
+  <img src="docs/images/demo.gif" width="300" alt="Tapping the menu sample: the photo is scanned, then each line of German is replaced in place with English. Holding the compare button shows the original again.">
+</p>
+
+A small web app on [Cloudflare Workers](https://developers.cloudflare.com/workers/), using [Mistral OCR](https://docs.mistral.ai/studio/document-processing/basic_ocr) to find the text and a Mistral chat model to translate it. It installs as an app on your phone and translates into 16 languages.
 
 ## How it works
 
+<p align="center">
+  <img src="docs/images/before-after.webp" width="560" alt="The same German road sign before and after: 'Züge fahren wieder!!' is replaced by 'Trains are running again!!' in matching colours.">
+</p>
+
+Each photo makes two model calls, and each model does the part it is good at:
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant W as Worker
+    participant O as Mistral OCR
+    participant T as Mistral chat model
+    B->>B: Rotate, shrink to 1600px, encode as JPEG
+    B->>W: POST /api/translate
+    W->>O: Where is the text?
+    O-->>W: Text blocks, each with a bounding box
+    W->>T: Translate all blocks in one call, each tagged with an id
+    T-->>W: Translations as JSON, keyed by id
+    W-->>B: Box + original + translation for every block
+    B->>B: Paint each translation over its box
 ```
-photo  →  browser: EXIF rotate, downscale to 1600px, JPEG → data URL
-       →  POST /api/translate
-       →  Worker: Mistral OCR (include_blocks)  →  text + a box per block
-       →  Worker: one chat call, all blocks together, JSON schema out
-       →  browser: sample each box's colour from the photo, draw the chips
-```
 
-Two API calls per photo. OCR finds *where* the text is; the chat model
-translates *what* it says. OCR cannot translate, and the chat model cannot be
-trusted with coordinates, so each does only its half.
+1. **OCR finds *where* the text is.** It returns every block of text with its position in pixels on the image you sent.
+2. **The chat model translates *what* it says.** All blocks go in a single request, and each translation comes back under the id of the block it belongs to. Even if the wording changes, it still lands in the right place.
+3. **The browser draws the result.** It samples the photo's colour under each box and paints the translation on top, so the result blends into the photo. Press and hold **Hold to compare** to see the original, or tap any line to see both.
 
-**The join is by id, never by text.** The Worker assigns an id to each block and
-the model must echo it back. A reworded translation therefore cannot detach from
-its box. Ids the model drops fall back to the source text and are reported as
-`translatedOk: false`.
-
-**Coordinates are pixels in the uploaded image's space**, and OCR echoes that
-image's dimensions back. The browser displays that exact bitmap in a frame
-locked to its aspect ratio, so positioning each chip is a percentage of the
-frame — no scaling maths, and it stays correct at any screen size.
-
-The browser does all the pixel work — decode, rotate, downscale, encode, sample,
-render — so the Worker never touches image data and stays far from its CPU limit.
-
-## Structure
+All image work (rotating, resizing, encoding, painting) happens in the browser. The Worker only passes text and coordinates between the two models.
 
 ```
 src/
-  index.ts      routes, validation, joins translations back to boxes
-  mistral.ts    the two Mistral calls, markdown stripping, block filtering
+├── index.ts      the API: validates the photo, calls both models, joins the results
+└── mistral.ts    the OCR and translation calls
 public/
-  index.html    all screens as stacked layers
-  styles.css    body[data-state] decides which layer and dock are visible
-  samples/      sample photos shown as the first-run deck
-  js/
-    main.js     session state, wiring, boot  (entry point)
-    camera.js   permission primer, live stream, capture
-    image.js    EXIF, downscale, JPEG encode
-    api.js      the two calls to our own Worker
-    overlay.js  colour sampling, chip layout, PNG export
-    install.js  PWA install prompt gating
-    ui.js       element handles, screen state, sheet, toasts
+├── index.html    every screen of the app
+└── js/
+    ├── camera.js   viewfinder and capture
+    ├── image.js    rotate, resize, encode
+    └── overlay.js  paints translations over the photo
 ```
 
-Screens are driven entirely by `body[data-state]`: `primer`, `camera`,
-`captured`, `working`, `result`, `upload`. JavaScript sets the attribute; CSS
-decides what is visible.
+## Run it locally
 
-Phones and tablets (`pointer: coarse`) open on the camera. Desktops open on the
-upload card and can opt into the camera.
-
-## Running it
+You need [Node.js 22+](https://nodejs.org/) and a [Mistral API key](https://console.mistral.ai/api-keys). A Cloudflare account is not needed to run it locally.
 
 ```sh
+git clone https://github.com/megaconfidence/translate.git
+cd translate
 npm install
-npm run dev          # http://localhost:8787
+echo "MISTRAL_API_KEY=your-key-here" > .env
+npm run dev
 ```
 
-Needs `MISTRAL_API_KEY` in `.env` at the project root:
+<img src="docs/images/start.webp" width="220" align="right" alt="The start screen: a camera prompt, with three sample photos fanned out like cards underneath.">
 
-```
-MISTRAL_API_KEY=...
-```
+Open **http://localhost:8787**. On a computer you can drop in a photo of your own, or pick one of the sample cards (a sign, a menu or a map) to try it straight away.
 
-After changing bindings in `wrangler.jsonc`, regenerate types:
+**Trying it on your phone.** Browsers only allow camera access on `localhost` or over HTTPS, so a link like `http://192.168.x.x:8787` will open but cannot use the camera. Instead, run:
 
 ```sh
-npm run cf-typegen
+npm run dev -- --tunnel
 ```
 
-## Deploying
+This gives you a temporary public HTTPS link through a [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/). Open it on your phone. Anyone with the link can use your API key while it is running, so stop it when you are done.
 
-The local `.env` is not uploaded. Set the key as a Worker secret once, then
-deploy:
+**Changing models.** Both models are set in `wrangler.jsonc` (`OCR_MODEL`, `TRANSLATE_MODEL`). The OCR model must support `include_blocks`, which `mistral-ocr-latest` does.
 
-```sh
-npx wrangler secret put MISTRAL_API_KEY
-npm run deploy
-```
-
-## Configuration
-
-Both models are `vars` in `wrangler.jsonc`, so they can be changed without
-touching code:
-
-| Var | Default | Notes |
-| --- | --- | --- |
-| `OCR_MODEL` | `mistral-ocr-latest` | Must be OCR 4 or newer. Older models return no `blocks`, and the overlay has nothing to position. |
-| `TRANSLATE_MODEL` | `mistral-small-latest` | Any chat model that honours `json_schema`. Reasoning models work but are slower for no quality gain here. |
-
-## Things that will bite you
-
-**The camera and PWA install both require a secure context.** `localhost` works.
-A LAN IP over plain `http` does not, which is baffling unless you know — the app
-detects it and says so.
-
-**OCR drops text separated by a wide horizontal gap.** A menu with
-right-aligned prices in a separate column loses the prices entirely; the same
-menu with dotted leaders, so the price sits in the same run of text, keeps them.
-This is a model limitation, not something the Worker can correct.
-
-**Translations can be longer than the source.** Each chip shrinks its font to
-fit, down to a floor. Below that the text is clipped, marked with a fade, and
-the full text is available by tapping the region.
-
-## Load-bearing details
-
-These look like cleanup opportunities and are not:
-
-- `pointer-events: none` on inactive `.layer` / `.dock`. A `visibility`
-  transition keeps an outgoing layer hit-testable for the whole fade, where it
-  swallows clicks meant for the screen replacing it.
-- `[hidden] { display: none !important }`. Class rules such as
-  `.toast { display: flex }` out-specify the browser's own `[hidden]` rule, which
-  silently stops the attribute working.
-- The crop in `captureVisibleFrame`. The viewfinder is `object-fit: cover`, so
-  capturing the raw camera frame would include text the user never saw.
-- Opaque translation chips. Their colour is sampled from the photo directly
-  underneath, so making them translucent blends a colour into itself and costs
-  legibility for no visual gain.
+<br clear="right">
