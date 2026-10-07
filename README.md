@@ -62,9 +62,9 @@ echo "MISTRAL_API_KEY=your-key-here" > .env
 npm run dev
 ```
 
-<img src="docs/images/start.webp" width="220" align="right" alt="The start screen: a camera prompt, with three sample photos fanned out like cards underneath.">
+<img src="docs/images/start.webp" width="220" align="right" alt="The start screen: a camera prompt, with four sample photos fanned out like a hand of cards underneath.">
 
-Open **http://localhost:8787**. On a computer you can drop in a photo of your own, or pick one of the sample cards (a sign, a menu or a map) to try it straight away.
+Open **http://localhost:8787**. On a computer you can drop in a photo of your own, or pick one of the sample cards (a German sign and menu, a page from a Japanese novel, or a French map) to try it straight away.
 
 **Trying it on your phone.** Browsers only allow camera access on `localhost` or over HTTPS, so a link like `http://192.168.x.x:8787` will open but cannot use the camera. Instead, run:
 

@@ -30,10 +30,11 @@ import * as install from "./install.js";
 
 const TARGET_KEY = "translate.target";
 const SAVED_TOAST_MS = 1600;
-/** Rendered left to right; the middle one sits on top of the deck. */
+/** Rendered left to right, each card overlapping the one before it. */
 const SAMPLES = [
 	{ label: "Sign", src: "/samples/sign.jpg" },
 	{ label: "Menu", src: "/samples/menu.jpg" },
+	{ label: "Book", src: "/samples/japanese.jpg" },
 	{ label: "Map", src: "/samples/map.jpg" },
 ];
 
@@ -67,20 +68,64 @@ el.target.addEventListener("change", () => {
 
 /* ------------------------------------------------------------ image intake */
 
-/** Shared entry point for camera frames and picked files. */
-async function accept(sourceBitmap) {
+/**
+ * Shared entry point for camera frames, picked files and samples. `origin` is
+ * the element the photo came from on screen (a sample card), if any.
+ */
+async function accept(sourceBitmap, origin = null) {
 	const { bitmap, dataUrl } = await prepareForUpload(sourceBitmap);
 	stopCamera();
 
 	current = { bitmap, dataUrl, result: null };
-	el.photo.src = dataUrl;
-	// Same photo, blurred behind the frame, so letterboxing picks up its colour.
-	el.ambient.style.backgroundImage = `url("${dataUrl}")`;
-	el.frame.style.aspectRatio = `${bitmap.width} / ${bitmap.height}`;
-	overlay.clear();
-	setState("captured");
+	await swapInPhoto(origin, async () => {
+		el.photo.src = dataUrl;
+		// Decoded before the screen changes, so the frame never paints empty.
+		await el.photo.decode().catch(() => {});
+		// Same photo, blurred behind the frame, so letterboxing picks up its colour.
+		el.ambient.style.backgroundImage = `url("${dataUrl}")`;
+		el.frame.style.aspectRatio = `${bitmap.width} / ${bitmap.height}`;
+		overlay.clear();
+		setState("captured");
+	});
 
 	await translate(dataUrl);
+}
+
+/**
+ * Runs `show` to put the new photo on screen. Given an `origin`, the browser
+ * morphs that element into the photo frame with a view transition; without
+ * one, without browser support, or with reduced motion, the screens just swap.
+ */
+async function swapInPhoto(origin, show) {
+	el.frame.style.animation = "";
+	const canMorph =
+		origin !== null &&
+		typeof document.startViewTransition === "function" &&
+		!matchMedia("(prefers-reduced-motion: reduce)").matches;
+	if (!canMorph) return show();
+
+	const root = document.documentElement;
+	origin.style.viewTransitionName = "photo";
+	root.classList.add("is-morphing");
+
+	// A name must be unique per snapshot: the card holds it before, the frame after.
+	const transition = document.startViewTransition(async () => {
+		origin.style.viewTransitionName = "";
+		el.frame.style.viewTransitionName = "photo";
+		// The morph is the frame's entrance; frame-in on top would play it twice.
+		el.frame.style.animation = "none";
+		await show();
+	});
+
+	const cleanUp = () => {
+		el.frame.style.viewTransitionName = "";
+		root.classList.remove("is-morphing");
+	};
+	transition.finished.then(cleanUp, cleanUp);
+	transition.ready.catch(() => {});
+	// Resolves once the new screen is in the DOM, so translation can start
+	// while the photo is still flying into place.
+	await transition.updateCallbackDone;
 }
 
 async function acceptFile(file) {
@@ -107,20 +152,28 @@ for (const button of [el.pick, el.choose, el.primerPick]) {
 	button.addEventListener("click", () => el.file.click());
 }
 
+/** Set while a sample is loading, so a double tap does not start it twice. */
+let loadingSample = false;
+
 /** Runs a bundled photo through the same pipeline as a picked file. */
-async function loadSample(src) {
+async function loadSample(src, card) {
+	if (loadingSample) return;
+	loadingSample = true;
 	try {
 		const response = await fetch(src);
 		if (!response.ok) throw new Error(`request failed (${response.status})`);
-		await accept(await bitmapFromFile(await response.blob()));
+		await accept(await bitmapFromFile(await response.blob()), card);
 	} catch (error) {
 		toastError(`Could not load the sample: ${error.message}`);
+	} finally {
+		loadingSample = false;
 	}
 }
 
 /** Fans the samples out as cards; `--i` is each card's offset from the centre. */
 function renderDeck(container) {
 	const middle = (SAMPLES.length - 1) / 2;
+	container.style.setProperty("--count", String(SAMPLES.length));
 	container.replaceChildren(
 		...SAMPLES.map(({ label, src }, index) => {
 			const card = document.createElement("button");
@@ -139,7 +192,7 @@ function renderDeck(container) {
 			caption.textContent = label;
 
 			card.append(image, caption);
-			card.addEventListener("click", () => loadSample(src));
+			card.addEventListener("click", () => loadSample(src, card));
 			return card;
 		}),
 	);

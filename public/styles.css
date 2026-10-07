@@ -148,6 +148,13 @@ button {
 		var(--shadow-lg);
 	background: #0a0c0f;
 	line-height: 0;
+}
+
+/*
+ * Keyed to the viewer's states rather than set on .frame itself, so it plays
+ * each time a photo arrives instead of once, unseen, at page load.
+ */
+body:is([data-state="captured"], [data-state="working"], [data-state="result"]) .frame {
 	animation: frame-in 0.42s var(--spring) backwards;
 }
 
@@ -640,6 +647,11 @@ body[data-state="result"] .sheet {
 		0 0 0 1px var(--border),
 		var(--shadow-lg);
 	text-align: center;
+}
+
+/* Entrances replay whenever the screen is shown, not once at page load. */
+body[data-state="upload"] .dropzone .dropcard,
+body[data-state="primer"] .primer .dropcard {
 	animation: frame-in 0.4s var(--spring) backwards;
 }
 
@@ -702,26 +714,37 @@ body[data-state="result"] .sheet {
 
 /*
  * Cards share one anchor at the centre and are fanned out purely by transform,
- * from `--i` (offset from the middle card, set in main.js). Hover only changes
- * the variables, so the transform transition animates every state change.
+ * from `--i` (each card's offset from the centre) and `--count`, both set in
+ * main.js. The fan is sized as a whole and divided between the cards:
+ * `--fan` is the distance between the two outer cards' centres, capped by the
+ * width actually available, and `--tilt-max` is the outer cards' angle. Hover
+ * only changes these variables, so the transform transition animates it.
  */
 .deck {
 	--card-w: 84px;
 	--card-h: 108px;
-	--spread: 62px;
-	--tilt: 8deg;
+	--fan: min(170px, 100cqw - var(--card-w) - 24px);
+	--tilt-max: 8deg;
+	--gaps: max(var(--count, 3) - 1, 1);
+	--spread: calc(var(--fan) / var(--gaps));
+	--tilt: calc(var(--tilt-max) * 2 / var(--gaps));
 	position: relative;
 	height: calc(var(--card-h) + 36px);
+	container-type: inline-size;
 }
 
+/*
+ * Layered like a hand of cards: each overlaps the one on its left, so every
+ * card keeps its left edge, and the label in that corner, in view.
+ */
 .deck-card {
-	--drop: calc(max(var(--i), -1 * var(--i)) * 8px);
+	--drop: calc(max(var(--i), -1 * var(--i)) * 16px / var(--gaps));
 	--turn: calc(var(--i) * var(--tilt));
 	--scale: 1;
 	position: absolute;
 	top: 16px;
 	left: 50%;
-	z-index: calc(3 - max(var(--i), -1 * var(--i)));
+	z-index: calc(var(--i) + var(--count, 3));
 	width: var(--card-w);
 	height: var(--card-h);
 	margin-left: calc(var(--card-w) / -2);
@@ -735,18 +758,34 @@ body[data-state="result"] .sheet {
 		var(--shadow-md);
 	transform-origin: 50% 100%;
 	transform: translateX(calc(var(--i) * var(--spread))) translateY(var(--drop)) rotate(var(--turn)) scale(var(--scale));
+	/*
+	 * z-index waits out most of the settle on the way down, so a card leaving
+	 * hover does not drop behind its neighbour while it is still raised.
+	 */
 	transition:
-		transform 0.38s var(--spring),
-		box-shadow 0.2s var(--ease);
-	/* Dealt in from the middle, one after another. */
-	animation: deal 0.5s var(--spring) backwards;
-	animation-delay: calc(0.12s + (var(--i) + 1) * 0.06s);
+		transform 0.42s var(--spring),
+		box-shadow 0.24s var(--ease),
+		z-index 0s 0.22s;
+	touch-action: manipulation;
+}
+
+/*
+ * Dealt from a single stack, left to right, each card landing on the last.
+ * Keyed to the screen being shown, so it replays every visit.
+ */
+body[data-state="upload"] .dropzone .deck-card,
+body[data-state="primer"] .primer .deck-card {
+	animation: deal 0.55s var(--spring) backwards;
+	animation-delay: calc(0.14s + (var(--i) + var(--gaps) / 2) * 0.07s);
 }
 
 @keyframes deal {
 	from {
 		opacity: 0;
-		transform: translateY(14px) scale(0.9);
+		transform: translateY(18px) scale(0.92);
+	}
+	30% {
+		opacity: 1;
 	}
 }
 
@@ -759,14 +798,12 @@ body[data-state="result"] .sheet {
 
 .deck-label {
 	position: absolute;
-	left: 50%;
-	bottom: 6px;
-	transform: translateX(-50%);
+	left: 5px;
+	bottom: 5px;
 	padding: 3px 8px;
 	border-radius: 999px;
-	background: rgb(10 12 15 / 58%);
-	backdrop-filter: var(--blur-soft);
-	-webkit-backdrop-filter: var(--blur-soft);
+	/* A flat tint, not a blur: blurred layers inside moving cards drop frames on low-end phones. */
+	background: rgb(10 12 15 / 64%);
 	color: #fff;
 	font-size: 11px;
 	font-weight: 600;
@@ -779,7 +816,8 @@ body[data-state="result"] .sheet {
 	--drop: -10px;
 	--turn: 0deg;
 	--scale: 1.06;
-	z-index: 5;
+	z-index: 20;
+	transition-delay: 0s;
 	box-shadow:
 		0 0 0 1px var(--border),
 		var(--shadow-lg);
@@ -792,15 +830,16 @@ body[data-state="result"] .sheet {
 /* Touch has no hover, and a sticky :hover would leave a card stuck mid-lift. */
 @media (hover: hover) and (pointer: fine) {
 	.deck:hover {
-		--spread: 96px;
-		--tilt: 5deg;
+		--fan: min(270px, 100cqw - var(--card-w) - 24px);
+		--tilt-max: 5deg;
 	}
 
 	.deck-card:hover {
 		--drop: -10px;
 		--turn: 0deg;
 		--scale: 1.06;
-		z-index: 5;
+		z-index: 20;
+		transition-delay: 0s;
 		box-shadow:
 			0 0 0 1px var(--border),
 			var(--shadow-lg);
@@ -809,6 +848,37 @@ body[data-state="result"] .sheet {
 	.deck-card:hover:active {
 		--scale: 1.01;
 	}
+}
+
+/*
+ * Tapping a sample grows that card into the photo frame. main.js names the
+ * card, then the frame, `photo`, and the browser morphs one box into the
+ * other: position, size and the card's tilt all unwind on the way.
+ */
+::view-transition-group(photo) {
+	animation-duration: 0.52s;
+	animation-timing-function: cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+/* Both snapshots fill the moving box, so neither stretches mid-flight. */
+::view-transition-old(photo),
+::view-transition-new(photo) {
+	height: 100%;
+	object-fit: cover;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+	animation-duration: 0.32s;
+}
+
+/*
+ * The morph already cross-fades the two screens, so the layers' own fades
+ * would play a second time inside it. Swap them instantly underneath instead.
+ */
+.is-morphing .layer,
+.is-morphing .dock {
+	transition: none;
 }
 
 /* ---------------------------------------------------------------- overlay */
@@ -1176,7 +1246,7 @@ body[data-state="result"] .sheet {
 		inset: 80px 26px calc(var(--dock-bottom) + 132px);
 	}
 
-	/* The first-run cards do not scroll, so the deck gives up height first. */
+	/* The deck gives up height first, so the first-run card fits without scrolling where it can. */
 	.samples {
 		margin-top: 18px;
 		padding-top: 12px;
@@ -1185,7 +1255,7 @@ body[data-state="result"] .sheet {
 	.deck {
 		--card-w: 70px;
 		--card-h: 90px;
-		--spread: 54px;
+		--fan: min(150px, 100cqw - var(--card-w) - 24px);
 	}
 }
 
